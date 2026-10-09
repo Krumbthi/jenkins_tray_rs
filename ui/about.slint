@@ -1,0 +1,77 @@
+//! About dialog - migrated from the original C# `JenkinsTray.UI.AboutForm`.
+
+export component AboutWindow inherits Window {
+    title: "About Jenkins Tray";
+    preferred-width: 300px;
+    preferred-height: 210px;
+    min-width: 300px;
+    max-width: 300px;
+    min-height: 210px;
+    max-height: 210px;
+
+    in property <string> version: "Version -";
+
+    callback open-link(url: string);
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 6px;
+
+        Text {
+            text: @tr("Jenkins Tray");
+            font-size: 15px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: root.version;
+            horizontal-alignment: center;
+        }
+
+        Rectangle { height: 10px; }
+
+        Rectangle {
+            height: 22px;
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.open-link("https://github.com/zionyx/jenkins-tray"); }
+            }
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: "https://github.com/zionyx/jenkins-tray";
+                color: #0563c1;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        Rectangle {
+            height: 22px;
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.open-link("https://github.com/aseigneurin/hudson-tray-tracker"); }
+            }
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: "https://github.com/aseigneurin/hudson-tray-tracker";
+                color: #0563c1;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                font-size: 11px;
+            }
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        Text {
+            text: @tr("Original project author: Alexis Seigneurin");
+            horizontal-alignment: center;
+            font-size: 11px;
+        }
+    }
+}

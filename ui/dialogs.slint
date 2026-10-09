@@ -1,0 +1,122 @@
+//! Small dialogs - migrated from the original C#
+//! `JenkinsTray.UI.AuthenticationTokenForm` and `JenkinsTray.UI.ClaimBuildForm`.
+
+import { Button, CheckBox, LineEdit, TextEdit } from "std-widgets.slint";
+
+/// Authentication token dialog (context menu: "Set authentication token").
+export component AuthTokenWindow inherits Window {
+    title: "Set authentication token";
+    preferred-width: 380px;
+    preferred-height: 190px;
+    min-width: 380px;
+    max-width: 380px;
+    min-height: 190px;
+    max-height: 190px;
+
+    in-out property <string> token;
+    in-out property <string> cause;
+
+    callback accepted();
+    callback canceled();
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        Text {
+            text: @tr("Authentication Token:\n (Case sensitive)");
+        }
+        LineEdit { text <=> root.token; }
+
+        Text {
+            text: @tr("Cause Text (Optional):");
+        }
+        LineEdit { text <=> root.cause; }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: @tr("OK");
+                width: 90px;
+                clicked => { root.accepted(); }
+            }
+            Button {
+                text: @tr("Cancel");
+                width: 90px;
+                clicked => { root.canceled(); }
+            }
+        }
+    }
+}
+
+/// Claim build dialog (context menu: "Claim this build").
+export component ClaimBuildWindow inherits Window {
+    title: "Claim build";
+    preferred-width: 430px;
+    preferred-height: 230px;
+    min-width: 430px;
+    max-width: 430px;
+    min-height: 230px;
+    max-height: 230px;
+
+    in property <string> claim-label: @tr("Claim build:");
+    in-out property <string> reason;
+    in-out property <bool> sticky: false;
+
+    callback accepted();
+    callback canceled();
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        HorizontalLayout {
+            spacing: 6px;
+            Text {
+                text: root.claim-label;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+            Text {
+                text: @tr("Reason:");
+                width: 70px;
+                vertical-alignment: center;
+            }
+            TextEdit {
+                text <=> root.reason;
+                horizontal-stretch: 1;
+                placeholder-text: @tr("Reason for claiming this build");
+            }
+        }
+
+        CheckBox {
+            text: @tr("Sticky (automatically applies if the next run fails)");
+            checked <=> root.sticky;
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: @tr("OK");
+                width: 90px;
+                clicked => { root.accepted(); }
+            }
+            Button {
+                text: @tr("Cancel");
+                width: 90px;
+                clicked => { root.canceled(); }
+            }
+        }
+    }
+}

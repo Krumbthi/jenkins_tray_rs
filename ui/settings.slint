@@ -1,0 +1,352 @@
+//! Settings window - migrated from the original C# `JenkinsTray.UI.SettingsForm`.
+//!
+//! Tabs: "Servers and projects" (ServersSettingsControl with ServerListControl
+//! and ProjectListControl), "Notifications" (NotificationsSettingsControl)
+//! and "General" (general options group).
+
+import { Button, CheckBox, GroupBox, LineEdit, ListView, SpinBox, TabWidget } from "std-widgets.slint";
+import { ServerRow, ProjectCheckRow, Ui } from "common.slint";
+
+export component SettingsWindow inherits Window {
+    title: "Jenkins Tray - Settings";
+    preferred-width: 746px;
+    min-width: 620px;
+    preferred-height: 440px;
+    min-height: 400px;
+
+    // --- "Servers and projects" tab ---
+    in-out property <[ServerRow]> servers;
+    in-out property <int> selected-server: -1;
+    in-out property <[ProjectCheckRow]> projects;
+    in property <string> servers-status;
+
+    // --- "General" tab ---
+    in-out property <int> refresh-interval: 15;
+    in-out property <bool> update-main-window-icon: true;
+    in-out property <bool> integrate-with-claim-plugin: false;
+    in-out property <bool> show-project-display-name: false;
+    in-out property <bool> check-for-updates: true;
+
+    // --- "Notifications" tab ---
+    in-out property <bool> enable-sound: false;
+    in-out property <bool> treat-unstable-as-failed: false;
+    in-out property <bool> enable-balloon: true;
+    in-out property <string> sound-failed: "";
+    in-out property <string> sound-fixed: "";
+    in-out property <string> sound-still-failing: "";
+    in-out property <string> sound-succeeded: "";
+
+    // Callbacks wired up from Rust.
+    callback add-server();
+    callback edit-server(index: int);
+    callback remove-server(index: int);
+    callback server-selection-changed(index: int);
+    callback toggle-project(index: int, selected: bool);
+    callback toggle-all-projects();
+    callback test-sound(key: string);
+    callback save-general();
+    callback save-notifications();
+
+    changed selected-server => { root.server-selection-changed(self.selected-server); }
+
+    TabWidget {
+        // -------------------------------------------------------------------
+        // Servers and projects
+        // -------------------------------------------------------------------
+        Tab {
+            title: @tr("Servers and projects");
+            VerticalLayout {
+                padding: 6px;
+                spacing: 6px;
+
+                // Server toolbar (original: Add server / Edit server / Remove server)
+                HorizontalLayout {
+                    spacing: 4px;
+                    Button {
+                        text: @tr("Add server");
+                        clicked => { root.add-server(); }
+                    }
+                    Button {
+                        text: @tr("Edit server");
+                        enabled: root.selected-server >= 0 && root.selected-server < root.servers.length;
+                        clicked => { root.edit-server(root.selected-server); }
+                    }
+                    Button {
+                        text: @tr("Remove server");
+                        enabled: root.selected-server >= 0 && root.selected-server < root.servers.length;
+                        clicked => { root.remove-server(root.selected-server); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    vertical-stretch: 1;
+
+                    // Servers list (original: ServerListControl)
+                    Rectangle {
+                        width: 280px;
+                        border-width: 1px;
+                        border-color: Ui.line;
+                        ListView {
+                            for s[i] in root.servers: server-row := Rectangle {
+                                height: 26px;
+                                background: i == root.selected-server ? Ui.selection
+                                    : srv-touch.has-hover ? Ui.hover
+                                    : #ffffff;
+                                Text {
+                                    x: 6px;
+                                    width: parent.width - 12px;
+                                    height: parent.height;
+                                    text: s.display;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                srv-touch := TouchArea {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    clicked => { root.selected-server = i; }
+                                }
+                            }
+                        }
+                    }
+
+                    // Projects list with selection checkboxes
+                    // (original: ProjectListControl)
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        border-width: 1px;
+                        border-color: Ui.line;
+                        VerticalLayout {
+                            HorizontalLayout {
+                                height: 30px;
+                                padding: 3px;
+                                Button {
+                                    text: @tr("Select/unselect all projects");
+                                    clicked => { root.toggle-all-projects(); }
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                            ListView {
+                                vertical-stretch: 1;
+                                for p[i] in root.projects: project-row := Rectangle {
+                                    height: 26px;
+                                    background: prj-touch.has-hover ? Ui.hover : #ffffff;
+                                    // The checkbox is drawn manually so that it always
+                                    // stays in sync with the model rows.
+                                    Rectangle {
+                                        x: 8px;
+                                        y: (parent.height - 14px) / 2;
+                                        width: 14px;
+                                        height: 14px;
+                                        border-width: 1px;
+                                        border-color: #7a7a7a;
+                                        border-radius: 2px;
+                                        background: p.selected ? #3d7fbe : #ffffff;
+                                        if (p.selected) : Text {
+                                            width: parent.width;
+                                            height: parent.height;
+                                            text: "\u{2713}";
+                                            color: #ffffff;
+                                            font-size: 11px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    Text {
+                                        x: 30px;
+                                        width: parent.width - 38px;
+                                        height: parent.height;
+                                        text: p.name;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                    prj-touch := TouchArea {
+                                        width: parent.width;
+                                        height: parent.height;
+                                        clicked => { root.toggle-project(i, !p.selected); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Status line (original: status bar of ServersSettingsControl)
+                Rectangle {
+                    height: 22px;
+                    Text {
+                        x: 4px;
+                        width: parent.width - 8px;
+                        height: parent.height;
+                        text: root.servers-status;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        font-size: 11px;
+                        color: #606060;
+                    }
+                }
+            }
+        }
+
+        // -------------------------------------------------------------------
+        // Notifications
+        // -------------------------------------------------------------------
+        Tab {
+            title: @tr("Notifications");
+            GroupBox {
+                title: @tr("Configure sound notifications");
+                VerticalLayout {
+                    spacing: 8px;
+
+                    CheckBox {
+                        text: @tr("Enable sound notifications");
+                        checked <=> root.enable-sound;
+                        toggled => { root.save-notifications(); }
+                    }
+
+                    // One row per notification category
+                    // (original: NotificationSettingsControl x4)
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: @tr("Build failed");
+                            width: 140px;
+                            vertical-alignment: center;
+                        }
+                        LineEdit {
+                            text <=> root.sound-failed;
+                            horizontal-stretch: 1;
+                            placeholder-text: @tr("path to sound file");
+                            edited(text) => { root.save-notifications(); }
+                        }
+                        Button {
+                            text: @tr("Test");
+                            width: 70px;
+                            clicked => { root.test-sound("failed"); }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: @tr("Build fixed");
+                            width: 140px;
+                            vertical-alignment: center;
+                        }
+                        LineEdit {
+                            text <=> root.sound-fixed;
+                            horizontal-stretch: 1;
+                            placeholder-text: @tr("path to sound file");
+                            edited(text) => { root.save-notifications(); }
+                        }
+                        Button {
+                            text: @tr("Test");
+                            width: 70px;
+                            clicked => { root.test-sound("fixed"); }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: @tr("Build still failing");
+                            width: 140px;
+                            vertical-alignment: center;
+                        }
+                        LineEdit {
+                            text <=> root.sound-still-failing;
+                            horizontal-stretch: 1;
+                            placeholder-text: @tr("path to sound file");
+                            edited(text) => { root.save-notifications(); }
+                        }
+                        Button {
+                            text: @tr("Test");
+                            width: 70px;
+                            clicked => { root.test-sound("still_failing"); }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: @tr("Build succeeded");
+                            width: 140px;
+                            vertical-alignment: center;
+                        }
+                        LineEdit {
+                            text <=> root.sound-succeeded;
+                            horizontal-stretch: 1;
+                            placeholder-text: @tr("path to sound file");
+                            edited(text) => { root.save-notifications(); }
+                        }
+                        Button {
+                            text: @tr("Test");
+                            width: 70px;
+                            clicked => { root.test-sound("succeeded"); }
+                        }
+                    }
+
+                    CheckBox {
+                        text: @tr("Treat unstable as failed");
+                        checked <=> root.treat-unstable-as-failed;
+                        toggled => { root.save-notifications(); }
+                    }
+                    CheckBox {
+                        text: @tr("Enable system tray balloon notifications");
+                        checked <=> root.enable-balloon;
+                        toggled => { root.save-notifications(); }
+                    }
+                }
+            }
+        }
+
+        // -------------------------------------------------------------------
+        // General
+        // -------------------------------------------------------------------
+        Tab {
+            title: @tr("General");
+            GroupBox {
+                title: @tr("General options");
+                VerticalLayout {
+                    spacing: 8px;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: @tr("Refresh interval (s):");
+                            vertical-alignment: center;
+                        }
+                        SpinBox {
+                            minimum: 1;
+                            maximum: 1000000;
+                            value <=> root.refresh-interval;
+                            edited(value) => { root.save-general(); }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+
+                    CheckBox {
+                        text: @tr("Update the main window's icon");
+                        checked <=> root.update-main-window-icon;
+                        toggled => { root.save-general(); }
+                    }
+                    CheckBox {
+                        text: @tr("Integrate with Claim plugin (experimental)");
+                        checked <=> root.integrate-with-claim-plugin;
+                        toggled => { root.save-general(); }
+                    }
+                    CheckBox {
+                        text: @tr("Show display name over project name in Main UI");
+                        checked <=> root.show-project-display-name;
+                        toggled => { root.save-general(); }
+                    }
+                    CheckBox {
+                        text: @tr("Check for updates periodically");
+                        checked <=> root.check-for-updates;
+                        toggled => { root.save-general(); }
+                    }
+
+                    Rectangle { vertical-stretch: 1; }
+                }
+            }
+        }
+    }
+}

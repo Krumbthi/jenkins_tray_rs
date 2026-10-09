@@ -1,0 +1,447 @@
+//! Tray backend abstraction and tray notifier state.
+//!
+//! Port of C# `UI/TrayNotifier.cs`: the worst-status computation, the tooltip
+//! text, the error/regression balloons and the acknowledged-status store live
+//! in [`TrayNotifierState`]; the platform rendering goes through
+//! [`TrayBackend`] (still a stub, so every call is logged).
+
+use std::collections::HashMap;
+
+use anyhow::Result;
+
+use crate::model::{AllBuildDetails, BuildStatus, BuildStatusEnum, Configuration, Project};
+use crate::notifications::TrayNotifier;
+
+/// Maximum tooltip length (original: TrayNotifier.MAX_TOOLTIP_LENGTH).
+pub const MAX_TOOLTIP_LENGTH: usize = 127;
+
+/// Icon severity of a balloon notification (original: ToolTipIcon). The
+/// original shows balloons with a 3000 ms timeout (error/regression) and a
+/// 10000 ms timeout (activity); the stub backend ignores both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationKind {
+    /// Used by the (not yet ported) activity balloons.
+    #[allow(dead_code)]
+    Info,
+    Warning,
+    Error,
+}
+
+/// Trait for platform-specific tray implementations.
+pub trait TrayBackend: Send + Sync {
+    fn initialize(&mut self) -> Result<()>;
+    /// Replace the tray icon (original: notifyIcon.Icon = iconsByKey[key]).
+    fn update_icon(&self, status: &BuildStatus) -> Result<()>;
+    /// Replace the tray tooltip (original: SetNotifyIconText).
+    fn set_tooltip(&self, text: &str) -> Result<()>;
+    /// Show a balloon notification (original: notifyIcon.ShowBalloonTip).
+    fn show_notification(
+        &self,
+        title: &str,
+        message: &str,
+        kind: NotificationKind,
+    ) -> Result<()>;
+    fn set_context_menu(&self, items: Vec<MenuItem>) -> Result<()>;
+    fn exit(&self) -> Result<()>;
+}
+
+#[derive(Debug, Clone)]
+pub struct MenuItem {
+    // Read by the real tray backend; the stub only counts the menu.
+    #[allow(dead_code)]
+    pub id: u32,
+    #[allow(dead_code)]
+    pub label: String,
+    #[allow(dead_code)]
+    pub enabled: bool,
+    #[allow(dead_code)]
+    pub checked: bool,
+}
+
+/// Tray context menu entries in the original order
+/// (original: NotifyIcon context menu Open / Settings / Refresh / About / Exit).
+pub const TRAY_MENU_ITEMS: &[(&str, u32)] = &[
+    ("Open", 1),
+    ("Settings", 2),
+    ("Refresh", 3),
+    ("About", 4),
+    ("Exit", 5),
+];
+
+pub struct StubTrayBackend;
+
+impl TrayBackend for StubTrayBackend {
+    fn initialize(&mut self) -> Result<()> {
+        Ok(())
+    }
+    fn update_icon(&self, status: &BuildStatus) -> Result<()> {
+        log::info!("Tray icon: {}", status.key());
+        Ok(())
+    }
+    fn set_tooltip(&self, text: &str) -> Result<()> {
+        log::debug!("Tray tooltip: {text}");
+        Ok(())
+    }
+    fn show_notification(&self, title: &str, message: &str, kind: NotificationKind) -> Result<()> {
+        log::info!("Balloon ({kind:?}): {title} - {}", message.replace('\n', " | "));
+        Ok(())
+    }
+    fn set_context_menu(&self, _items: Vec<MenuItem>) -> Result<()> {
+        Ok(())
+    }
+    fn exit(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl TrayNotifier for StubTrayBackend {
+    fn play_sound(&self, path: &str) -> Result<()> {
+        log::info!("Playing sound: {path}");
+        Ok(())
+    }
+}
+
+pub fn create_tray_backend() -> Result<Box<dyn TrayBackend>> {
+    Ok(Box::new(StubTrayBackend))
+}
+
+// ---------------------------------------------------------------------------
+// Tray notifier state (original: TrayNotifier)
+// ---------------------------------------------------------------------------
+
+/// The in-memory state the original keeps in `TrayNotifier`.
+#[derive(Default)]
+pub struct TrayNotifierState {
+    /// Acknowledged status per project URL
+    /// (original: acknowledgedStatusByProject).
+    acknowledged_status_by_project: HashMap<String, BuildStatus>,
+    /// Overall status of the previous update (original: lastBuildStatus).
+    last_build_status: Option<BuildStatus>,
+    /// Build details of the previous update per project URL (original:
+    /// lastProjectsBuildDetails; the original stores `null` for projects
+    /// without details).
+    last_projects_build_details: HashMap<String, Option<AllBuildDetails>>,
+}
+
+impl TrayNotifierState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Initial icon/tooltip (original: TrayNotifier.UpdateNotifierStartup).
+    pub fn startup(&self, backend: &dyn TrayBackend) -> Result<()> {
+        backend.update_icon(&BuildStatus::unknown())?;
+        backend.set_tooltip("JenkinsTray")?;
+        Ok(())
+    }
+
+    /// Recompute icon, tooltip and balloons
+    /// (original: TrayNotifier.UpdateNotifier).
+    pub fn update(&mut self, config: &Configuration, backend: &dyn TrayBackend) {
+        if let Err(e) = self.do_update(config, backend) {
+            log::error!("Could not update the tray notifier: {e}");
+            let _ = backend.update_icon(&BuildStatus::unknown());
+        }
+    }
+
+    fn do_update(&mut self, config: &Configuration, backend: &dyn TrayBackend) -> Result<()> {
+        let mut worst_build_status: Option<BuildStatusEnum> = None;
+        let mut build_in_progress = false;
+        let mut build_is_stuck = false;
+        let mut error_projects: Vec<&Project> = Vec::new();
+        let mut regressing_projects: Vec<&Project> = Vec::new();
+        let mut progressing_and_error_projects: Vec<&Project> = Vec::new();
+        let mut total_project_count = 0usize;
+
+        for server in &config.servers {
+            for project in &server.projects {
+                total_project_count += 1;
+
+                let status = self.get_project_status(project);
+                if worst_build_status.is_none_or(|worst| status.value > worst) {
+                    worst_build_status = Some(status.value);
+                }
+                if status.value >= BuildStatusEnum::Failed {
+                    error_projects.push(project);
+                }
+                if status.value > BuildStatusEnum::Successful {
+                    progressing_and_error_projects.push(project);
+                }
+                if status.is_in_progress {
+                    build_in_progress = true;
+                    progressing_and_error_projects.push(project);
+                }
+                if status.is_stuck {
+                    build_is_stuck = true;
+                }
+                // original: IsRegressing reads the snapshot of the previous
+                // update, which is written afterwards.
+                if self.is_regressing(project) {
+                    regressing_projects.push(project);
+                }
+                self.last_projects_build_details
+                    .insert(project.url.clone(), project.all_build_details.clone());
+            }
+        }
+
+        let overall = BuildStatus {
+            value: worst_build_status.unwrap_or(BuildStatusEnum::Unknown),
+            is_in_progress: build_in_progress,
+            is_stuck: build_is_stuck,
+        };
+
+        // original: UpdateIcon - the main-window icon update
+        // (GeneralSettings.UpdateMainWindowIcon) has no Slint equivalent yet.
+        backend.update_icon(&overall)?;
+
+        self.update_tray_tooltip(&progressing_and_error_projects, total_project_count, backend)?;
+
+        if config.notification_settings.balloon_notifications {
+            self.update_balloon_tip(&error_projects, &regressing_projects, backend)?;
+            // original: ShowBallowTip(interestingProjects) - driven by
+            // ProjectActivity, which is not ported yet.
+            log::debug!("Activity balloons are not available yet (ProjectActivity not ported)");
+        }
+
+        self.last_build_status = Some(overall);
+        Ok(())
+    }
+
+    /// Status of a project, honouring the acknowledgement
+    /// (original: TrayNotifier.GetProjectStatus).
+    fn get_project_status(&mut self, project: &Project) -> BuildStatus {
+        let status = project.status();
+        let acknowledged = self
+            .acknowledged_status_by_project
+            .get(&project.url)
+            .cloned();
+
+        if project.is_acknowledged || acknowledged.is_some() {
+            if project.is_acknowledged
+                || acknowledged
+                    .as_ref()
+                    .is_some_and(|acknowledged| acknowledged.value == status.value)
+            {
+                return BuildStatus {
+                    value: BuildStatusEnum::Successful,
+                    is_in_progress: false,
+                    is_stuck: false,
+                };
+            }
+            if status.value != BuildStatusEnum::Unknown
+                && acknowledged.as_ref().is_some_and(|a| a.is_worse(&status))
+            {
+                // the status got better than the acknowledged one: stop
+                // hiding it (original: ClearAcknowledgedStatus)
+                self.acknowledged_status_by_project.remove(&project.url);
+            }
+        }
+        status
+    }
+
+    /// Whether the project's status got worse since the previous update
+    /// (original: TrayNotifier.IsRegressing).
+    fn is_regressing(&self, project: &Project) -> bool {
+        let Some(previous) = self.last_projects_build_details.get(&project.url) else {
+            return false;
+        };
+        let Some(previous) = previous else {
+            return false;
+        };
+        let Some(new_details) = project.all_build_details.as_ref() else {
+            return false;
+        };
+        // moving from unknown/aborted to successful is not a regression
+        if new_details.status.value <= BuildStatusEnum::Successful {
+            return false;
+        }
+        new_details.status.is_worse(&previous.status)
+    }
+
+    /// Builds the tray tooltip (original: TrayNotifier.UpdateTrayTooltip).
+    fn update_tray_tooltip(
+        &mut self,
+        progressing_and_error_projects: &[&Project],
+        total_project_count: usize,
+        backend: &dyn TrayBackend,
+    ) -> Result<()> {
+        let mut tooltip = String::new();
+
+        if total_project_count == 0 {
+            tooltip.push_str("No projects monitored.");
+        } else if !progressing_and_error_projects.is_empty() {
+            for project in progressing_and_error_projects {
+                // original: acknowledged projects are skipped
+                if project.is_acknowledged
+                    || self.acknowledged_status_by_project.contains_key(&project.url)
+                {
+                    continue;
+                }
+                if !tooltip.is_empty() {
+                    tooltip.push('\n');
+                }
+                let status = self.get_project_status(project);
+                if status.is_in_progress && status.value == BuildStatusEnum::Failed {
+                    tooltip.push_str(&format!("{}: Failed and in progress.", project.name));
+                } else if status.is_in_progress {
+                    tooltip.push_str(&format!("{}: In progress.", project.name));
+                } else {
+                    tooltip.push_str(&format!("{}: {:?}.", project.name, status.value));
+                }
+                if tooltip.chars().count() > MAX_TOOLTIP_LENGTH {
+                    break;
+                }
+            }
+        } else {
+            tooltip.push_str("All builds are good.");
+        }
+
+        backend.set_tooltip(&truncate_tooltip(&tooltip))?;
+        Ok(())
+    }
+
+    /// Error / regression balloons (original: TrayNotifier.UpdateBalloonTip).
+    fn update_balloon_tip(
+        &mut self,
+        error_projects: &[&Project],
+        regressing_projects: &[&Project],
+        backend: &dyn TrayBackend,
+    ) -> Result<()> {
+        if self.last_build_status.as_ref().is_some_and(|last| last.value < BuildStatusEnum::Failed)
+            && !error_projects.is_empty()
+        {
+            let mut text = String::new();
+            for project in error_projects {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                let last_failed = project
+                    .all_build_details
+                    .as_ref()
+                    .and_then(|details| details.last_failed_build.as_ref());
+                if last_failed.is_none() {
+                    log::warn!(
+                        "No details for the last failed build of project in error: {}",
+                        project.url
+                    );
+                }
+                format_project_details(&project.name, last_failed, &mut text);
+            }
+            backend.show_notification("Build failed", &text, NotificationKind::Error)?;
+            return Ok(());
+        }
+
+        if !regressing_projects.is_empty() {
+            let mut text = String::new();
+            for project in regressing_projects {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                let last_completed = project
+                    .all_build_details
+                    .as_ref()
+                    .and_then(|details| details.last_completed_build.as_ref());
+                if last_completed.is_none() {
+                    log::warn!(
+                        "No details for the last failed build of project in error: {}",
+                        project.url
+                    );
+                }
+                format_project_details(&project.name, last_completed, &mut text);
+            }
+            backend.show_notification("Projects regressed", &text, NotificationKind::Warning)?;
+        }
+        Ok(())
+    }
+
+    /// Whether the status of a project URL is acknowledged
+    /// (original: TrayNotifier.IsStatusAcknowledged).
+    pub fn is_status_acknowledged(&self, project_url: &str) -> bool {
+        self.acknowledged_status_by_project.contains_key(project_url)
+    }
+
+    /// Acknowledge the current status of a project
+    /// (original: TrayNotifier.AcknowledgeStatus).
+    pub fn acknowledge_status(&mut self, project_url: &str, status: BuildStatus) {
+        self.acknowledged_status_by_project
+            .insert(project_url.to_string(), status);
+    }
+
+    /// Forget the acknowledged status (original:
+    /// TrayNotifier.ClearAcknowledgedStatus).
+    pub fn clear_acknowledged_status(&mut self, project_url: &str) {
+        self.acknowledged_status_by_project.remove(project_url);
+    }
+}
+
+/// "name (user1, user2)" (original: FormatProjectDetails).
+fn format_project_details(project_name: &str, build: Option<&crate::model::BuildDetails>, text: &mut String) {
+    text.push_str(project_name);
+    if let Some(build) = build {
+        if !build.users.is_empty() {
+            let mut users: Vec<&String> = build.users.iter().collect();
+            users.sort();
+            let joined: Vec<&str> = users.iter().map(|name| name.as_str()).collect();
+            text.push_str(&format!(" ({})", joined.join(", ")));
+        }
+    }
+}
+
+/// 127 character cap with an ellipsis (original: SetNotifyIconText).
+fn truncate_tooltip(text: &str) -> String {
+    if text.chars().count() > MAX_TOOLTIP_LENGTH {
+        let mut truncated: String = text.chars().take(MAX_TOOLTIP_LENGTH - 4).collect();
+        truncated.push_str(" ...");
+        truncated
+    } else {
+        text.to_string()
+    }
+}
+
+/// Bundle of tray backend + notifier state behind a single lock.
+pub struct TrayHub {
+    pub state: TrayNotifierState,
+    pub backend: Box<dyn TrayBackend>,
+}
+
+impl TrayHub {
+    /// Create the tray (original: Spring object graph + UpdateNotifierStartup).
+    pub fn new() -> Result<Self> {
+        let mut backend = create_tray_backend()?;
+        backend.initialize()?;
+        backend.set_context_menu(
+            TRAY_MENU_ITEMS
+                .iter()
+                .map(|&(label, id)| MenuItem {
+                    id,
+                    label: label.to_string(),
+                    enabled: true,
+                    checked: false,
+                })
+                .collect(),
+        )?;
+        let state = TrayNotifierState::new();
+        state.startup(&*backend)?;
+        Ok(Self { state, backend })
+    }
+
+    /// Refresh icon/tooltip/balloons for the current configuration.
+    pub fn update(&mut self, config: &Configuration) {
+        self.state.update(config, &*self.backend);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncates_long_tooltips() {
+        let long = "x".repeat(200);
+        let truncated = truncate_tooltip(&long);
+        assert_eq!(truncated.chars().count(), MAX_TOOLTIP_LENGTH);
+        assert!(truncated.ends_with(" ..."));
+
+        assert_eq!(truncate_tooltip("short"), "short");
+    }
+}

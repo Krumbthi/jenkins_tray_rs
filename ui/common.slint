@@ -1,0 +1,222 @@
+//! Shared data structures, style constants and reusable widgets for the
+//! Jenkins Tray UI. Migrated from the original C# WinForms application
+//! (MainForm grid, status icons, column layout).
+
+// ---------------------------------------------------------------------------
+// Data structures filled in from Rust
+// ---------------------------------------------------------------------------
+
+/// One row of the main projects grid: either a server group header
+/// (is-header == true) or a project row.
+export struct ProjectRow {
+    server: string,
+    name: string,
+    url: string,
+    details: string,
+    last-build: string,
+    last-success: string,
+    last-success-user: string,
+    last-failure: string,
+    last-failure-user: string,
+    claimed-by: string,
+    claim-reason: string,
+    // "success" | "failed" | "unstable" | "aborted" | "disabled"
+    // | "indeterminate" | "unknown"
+    status-kind: string,
+    in-progress: bool,
+    stuck: bool,
+    queued: bool,
+    // True when the "Acknowledge status" menu item is available
+    // (original: projectStatus.IsStuck || Value >= Indeterminate).
+    ack-status-eligible: bool,
+    claim-eligible: bool,
+    is-header: bool,
+}
+
+/// One server entry in the settings "Servers and projects" tab.
+export struct ServerRow {
+    display: string,
+    url: string,
+}
+
+/// One project entry with its selection state in the settings tab.
+export struct ProjectCheckRow {
+    name: string,
+    selected: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Style constants shared by all windows
+// ---------------------------------------------------------------------------
+
+export global Ui {
+    // Main grid columns (mirrors the original grid column widths)
+    in-out property <length> col-status: 46px;
+    in-out property <length> col-project: 156px;
+    in-out property <length> col-details: 196px;
+    in-out property <length> col-build: 124px;
+    in-out property <length> col-user: 76px;
+    in-out property <length> col-claimed: 92px;
+    in-out property <length> col-reason: 128px;
+
+    in-out property <color> selection: #cce4f7;
+    in-out property <color> hover: #eaf3fc;
+    in-out property <color> bar-bg: #f5f5f5;
+    in-out property <color> line: #d9d9d9;
+    in-out property <color> group-bg: #ededed;
+}
+
+// ---------------------------------------------------------------------------
+// Status ball - vector replacement for the original StatusIcons/*.gif
+// ---------------------------------------------------------------------------
+
+export component StatusBall inherits Rectangle {
+    in property <string> status-kind: "unknown";
+    in property <bool> in-progress: false;
+    in property <bool> stuck: false;
+
+    width: 16px;
+    height: 16px;
+    border-radius: self.width / 2;
+    background: status-kind == "failed" ? #e53935
+        : status-kind == "success" ? #439fe0
+        : status-kind == "unstable" ? #fb8c00
+        : status-kind == "aborted" ? #9e9e9e
+        : status-kind == "disabled" ? #616161
+        : status-kind == "indeterminate" ? #bdbdbd
+        : #8e24aa;
+    border-width: stuck ? 3px : 1px;
+    border-color: stuck ? #000000 : #ffffffcc;
+
+    // Pulsing ring while a build is in progress (replaces the animated GIF)
+    if (in-progress) : Rectangle {
+        x: 2px;
+        y: 2px;
+        width: parent.width - 4px;
+        height: parent.height - 4px;
+        border-radius: self.width / 2;
+        border-width: 2px;
+        border-color: #ffffff;
+        opacity: 0.25;
+        animate opacity {
+            duration: 600ms;
+            iteration-count: -1;
+            direction: alternate;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Grid cells
+// ---------------------------------------------------------------------------
+
+component CellText inherits Rectangle {
+    in property <string> cell-text;
+    in property <length> cell-width;
+    in property <bool> align-right: false;
+    in property <bool> bold: false;
+    in property <color> foreground: #000000;
+
+    width: cell-width;
+
+    Text {
+        x: 6px;
+        y: 0;
+        width: parent.width - 12px;
+        height: parent.height;
+        text: root.cell-text;
+        color: root.foreground;
+        font-weight: root.bold ? 700 : 400;
+        horizontal-alignment: root.align-right ? right : left;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+/// Column header row of the main grid (original: grid column captions).
+export component TableHeader inherits Rectangle {
+    in property <bool> show-claim-columns: false;
+
+    height: 24px;
+    background: Ui.bar-bg;
+    border-width: 1px;
+    border-color: Ui.line;
+
+    HorizontalLayout {
+        CellText { cell-text: ""; cell-width: Ui.col-status; }
+        CellText { cell-text: "Project"; cell-width: Ui.col-project; bold: true; }
+        CellText { cell-text: "Details"; cell-width: Ui.col-details; }
+        CellText { cell-text: "Last build"; cell-width: Ui.col-build; align-right: true; }
+        CellText { cell-text: "Last success"; cell-width: Ui.col-build; align-right: true; }
+        CellText { cell-text: "Last failure"; cell-width: Ui.col-build; align-right: true; }
+        CellText { cell-text: "Last failure user"; cell-width: Ui.col-user; }
+        if (root.show-claim-columns) : CellText { cell-text: "Claimed by"; cell-width: Ui.col-claimed; }
+        if (root.show-claim-columns) : CellText { cell-text: "Claim reason"; cell-width: Ui.col-reason; }
+        Rectangle { horizontal-stretch: 1; }
+    }
+}
+
+/// A single grid row: server group header or project row with status ball.
+export component ProjectRowView inherits Rectangle {
+    in property <ProjectRow> project-row;
+    in property <bool> selected: false;
+    in property <bool> show-claim-columns: false;
+
+    callback clicked();
+    callback double-clicked();
+
+    height: project-row.is-header ? 24px : 26px;
+    background: project-row.is-header ? Ui.group-bg
+        : selected ? Ui.selection
+        : touch.has-hover ? Ui.hover
+        : #ffffff;
+
+    if (project-row.is-header) : Text {
+        x: 6px;
+        width: parent.width - 12px;
+        height: parent.height;
+        text: project-row.server;
+        font-weight: 700;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    if (!project-row.is-header) : HorizontalLayout {
+        Rectangle {
+            width: Ui.col-status;
+            StatusBall {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                status-kind: project-row.status-kind;
+                in-progress: project-row.in-progress;
+                stuck: project-row.stuck;
+            }
+        }
+        CellText { cell-text: project-row.name; cell-width: Ui.col-project; bold: true; }
+        CellText { cell-text: project-row.details; cell-width: Ui.col-details; }
+        CellText { cell-text: project-row.last-build; cell-width: Ui.col-build; align-right: true; }
+        CellText { cell-text: project-row.last-success; cell-width: Ui.col-build; align-right: true; }
+        CellText { cell-text: project-row.last-failure; cell-width: Ui.col-build; align-right: true; }
+        CellText { cell-text: project-row.last-failure-user; cell-width: Ui.col-user; }
+        if (root.show-claim-columns) : CellText { cell-text: project-row.claimed-by; cell-width: Ui.col-claimed; }
+        if (root.show-claim-columns) : CellText { cell-text: project-row.claim-reason; cell-width: Ui.col-reason; }
+        Rectangle { horizontal-stretch: 1; }
+    }
+
+    // Row separator (the original grid draws grid lines)
+    Rectangle {
+        x: 0;
+        y: parent.height - 1px;
+        width: parent.width;
+        height: 1px;
+        background: Ui.line;
+        visible: !project-row.is-header;
+    }
+
+    touch := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => { root.clicked(); }
+        double-clicked => { root.double-clicked(); }
+    }
+}

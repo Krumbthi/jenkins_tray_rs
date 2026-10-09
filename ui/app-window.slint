@@ -1,0 +1,230 @@
+//! Main application window UI definition.
+//!
+//! Migrated from the original C# `JenkinsTray.UI.MainForm`:
+//! toolbar (Settings / Refresh / Exit / Check for updates / About),
+//! projects grid grouped by server, context menu, F5 refresh and the
+//! "Last check:" status bar.
+
+import { Button, ListView } from "std-widgets.slint";
+import { ProjectRow, Ui, TableHeader, ProjectRowView } from "common.slint";
+import { SettingsWindow } from "settings.slint";
+import { EditServerWindow } from "edit-server.slint";
+import { AboutWindow } from "about.slint";
+import { AuthTokenWindow, ClaimBuildWindow } from "dialogs.slint";
+
+export { SettingsWindow, EditServerWindow, AboutWindow, AuthTokenWindow, ClaimBuildWindow }
+
+export component AppWindow inherits Window {
+    title: "Jenkins Tray";
+    preferred-width: 900px;
+    min-width: 700px;
+    preferred-height: 460px;
+    min-height: 320px;
+
+    // Project rows (server group headers + projects), filled from Rust.
+    in-out property <[ProjectRow]> rows;
+    in-out property <int> selected-row: -1;
+    in property <bool> integrate-claim: false;
+    in-out property <string> last-check: "Last check: -";
+    in-out property <string> status-text;
+
+    // Checkmarks of the "Acknowledge ..." menu items, synced from Rust
+    // whenever the selection changes.
+    in-out property <bool> selected-ack-status: false;
+    in-out property <bool> selected-ack-project: false;
+
+    // Callbacks wired up from Rust.
+    callback refresh-projects();
+    callback open-settings();
+    callback check-for-updates();
+    callback open-about();
+    callback exit-app();
+    callback activate-project();
+    callback menu-action(action: string);
+    callback selection-changed(row-index: int);
+
+    // Selection state used to enable/disable the context menu items
+    // (mirrors MainForm.contextMenuStrip_Opening).
+    property <bool> has-selection: selected-row >= 0 && selected-row < rows.length && !rows[selected-row].is-header;
+    property <bool> sel-in-progress: has-selection && rows[selected-row].in-progress;
+    property <bool> sel-queued: has-selection && rows[selected-row].queued;
+    property <bool> sel-not-ok: has-selection && rows[selected-row].ack-status-eligible;
+    property <bool> sel-claimable: integrate-claim && has-selection && rows[selected-row].claim-eligible;
+
+    // F5 refresh (original: MainForm_KeyUp).
+    forward-focus: key-scope;
+    key-scope := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.F5) {
+                root.refresh-projects();
+                accept
+            } else {
+                reject
+            }
+        }
+    }
+
+    VerticalLayout {
+        // --- Toolbar (original: DevExpress main menu bar) ---
+        Rectangle {
+            height: 30px;
+            background: Ui.bar-bg;
+            border-width: 1px;
+            border-color: Ui.line;
+            HorizontalLayout {
+                padding: 3px;
+                spacing: 4px;
+                Button {
+                    text: @tr("Settings");
+                    width: 90px;
+                    clicked => { root.open-settings(); }
+                }
+                Button {
+                    text: @tr("Refresh");
+                    width: 90px;
+                    clicked => { root.refresh-projects(); }
+                }
+                Button {
+                    text: @tr("Exit");
+                    width: 70px;
+                    clicked => { root.exit-app(); }
+                }
+                Button {
+                    text: @tr("Check for updates");
+                    width: 140px;
+                    clicked => { root.check-for-updates(); }
+                }
+                Button {
+                    text: @tr("About");
+                    width: 80px;
+                    clicked => { root.open-about(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+
+        // --- Column headers (original: grid column captions) ---
+        TableHeader { show-claim-columns: root.integrate-claim; }
+
+        // --- Projects grid (original: projectsGridControl) ---
+        Rectangle {
+            vertical-stretch: 1;
+            background: #ffffff;
+
+            if (root.rows.length == 0) : Text {
+                x: 12px;
+                y: 12px;
+                width: parent.width - 24px;
+                height: parent.height - 24px;
+                text: @tr("No Jenkins servers or projects configured.\nUse \"Settings\" to add a server.");
+                color: #808080;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            ContextMenuArea {
+                ListView {
+                    for item[i] in root.rows: delegate := ProjectRowView {
+                        project-row: item;
+                        show-claim-columns: root.integrate-claim;
+                        selected: i == root.selected-row && !item.is-header;
+                        clicked => {
+                            root.selected-row = i;
+                            root.selection-changed(i);
+                        }
+                        double-clicked => {
+                            root.selected-row = i;
+                            root.selection-changed(i);
+                            root.activate-project();
+                        }
+                    }
+                }
+
+                // Original contextMenuStrip item order.
+                Menu {
+                    MenuItem {
+                        title: @tr("Open project page");
+                        enabled: root.has-selection;
+                        activated => { root.menu-action("open-page"); }
+                    }
+                    MenuItem {
+                        title: @tr("View console output");
+                        enabled: root.has-selection;
+                        activated => { root.menu-action("console"); }
+                    }
+                    MenuItem {
+                        title: @tr("Run build");
+                        enabled: root.has-selection && !root.sel-in-progress;
+                        activated => { root.menu-action("run-build"); }
+                    }
+                    MenuItem {
+                        title: root.sel-queued && !root.sel-in-progress
+                            ? @tr("Cancel queue")
+                            : @tr("Abort build");
+                        enabled: root.has-selection && (root.sel-in-progress || root.sel-queued);
+                        activated => { root.menu-action("abort-build"); }
+                    }
+                    MenuSeparator {}
+                    MenuItem {
+                        title: @tr("Acknowledge status");
+                        enabled: root.has-selection && root.sel-not-ok;
+                        checkable: true;
+                        checked <=> root.selected-ack-status;
+                        activated => { root.menu-action("ack-status"); }
+                    }
+                    MenuItem {
+                        title: @tr("Acknowledge project");
+                        enabled: root.has-selection;
+                        checkable: true;
+                        checked <=> root.selected-ack-project;
+                        activated => { root.menu-action("ack-project"); }
+                    }
+                    MenuSeparator {}
+                    MenuItem {
+                        title: @tr("Set authentication token");
+                        enabled: root.has-selection;
+                        activated => { root.menu-action("auth-token"); }
+                    }
+                    MenuSeparator {}
+                    MenuItem {
+                        title: @tr("Claim this build");
+                        enabled: root.sel-claimable;
+                        activated => { root.menu-action("claim-build"); }
+                    }
+                    MenuSeparator {}
+                    MenuItem {
+                        title: @tr("Remove project");
+                        enabled: root.has-selection;
+                        activated => { root.menu-action("remove-project"); }
+                    }
+                }
+            }
+        }
+
+        // --- Status bar (original: bar3 with "Last check: ...") ---
+        Rectangle {
+            height: 26px;
+            background: Ui.bar-bg;
+            border-width: 1px;
+            border-color: Ui.line;
+            Text {
+                x: 8px;
+                width: parent.width / 2 - 12px;
+                height: parent.height;
+                text: root.last-check;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Text {
+                x: parent.width / 2;
+                width: parent.width / 2 - 10px;
+                height: parent.height;
+                text: root.status-text;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                overflow: elide;
+                color: #606060;
+            }
+        }
+    }
+}

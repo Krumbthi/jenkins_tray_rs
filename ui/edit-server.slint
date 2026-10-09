@@ -1,0 +1,105 @@
+//! Server settings dialog - migrated from the original C#
+//! `JenkinsTray.UI.EditServerForm` (fixed dialog: URL, display name,
+//! authentication, ignore untrusted certificate, OK/Cancel).
+
+import { Button, CheckBox, LineEdit } from "std-widgets.slint";
+
+export component EditServerWindow inherits Window {
+    title: "Server settings";
+    preferred-width: 430px;
+    preferred-height: 300px;
+    min-width: 430px;
+    max-width: 430px;
+    min-height: 300px;
+    max-height: 300px;
+
+    in-out property <string> url;
+    in-out property <string> display-name;
+    in-out property <bool> auth-enabled: false;
+    in-out property <string> username;
+    in-out property <string> password;
+    in-out property <bool> ignore-certificate: false;
+
+    callback accepted();
+    callback canceled();
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        GridLayout {
+            spacing: 8px;
+            Row {
+                Text {
+                    text: @tr("URL:");
+                    vertical-alignment: center;
+                }
+                LineEdit {
+                    text <=> root.url;
+                    placeholder-text: "https://ci.example.com";
+                }
+            }
+            Row {
+                Text {
+                    text: @tr("Display name (optional):");
+                    vertical-alignment: center;
+                }
+                LineEdit { text <=> root.display-name; }
+            }
+        }
+
+        CheckBox {
+            text: @tr("Authentication");
+            checked <=> root.auth-enabled;
+        }
+
+        GridLayout {
+            spacing: 8px;
+            Row {
+                Text {
+                    text: @tr("User name:");
+                    vertical-alignment: center;
+                    color: root.auth-enabled ? #000000 : #a0a0a0;
+                }
+                LineEdit {
+                    text <=> root.username;
+                    enabled: root.auth-enabled;
+                }
+            }
+            Row {
+                Text {
+                    text: @tr("Password:");
+                    vertical-alignment: center;
+                    color: root.auth-enabled ? #000000 : #a0a0a0;
+                }
+                LineEdit {
+                    text <=> root.password;
+                    enabled: root.auth-enabled;
+                    input-type: InputType.password;
+                }
+            }
+        }
+
+        CheckBox {
+            text: @tr("Ignore untrusted certificate (SSL)");
+            checked <=> root.ignore-certificate;
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: @tr("OK");
+                width: 90px;
+                clicked => { root.accepted(); }
+            }
+            Button {
+                text: @tr("Cancel");
+                width: 90px;
+                clicked => { root.canceled(); }
+            }
+        }
+    }
+}

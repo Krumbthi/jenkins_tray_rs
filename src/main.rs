@@ -9,9 +9,9 @@
 //! The Jenkins client, the update service, the notification buckets and the
 //! tray notifier state are ports of `JenkinsService`, `ProjectsUpdateService`,
 //! `AllServersStatus`/`NotificationService` and `TrayNotifier`; where the Rust
-//! backend is still a stub (system tray rendering, application update service),
-//! the callback degrades to logging - the original behavior is documented at
-//! each call site.
+//! backend is still a stub (application update service, sound playback), the
+//! callback degrades to logging - the original behavior is documented at each
+//! call site.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::Result;
 use chrono::{Duration, Local, TimeZone};
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{CloseRequestResponse, ComponentHandle, ModelRc, VecModel};
 
 use config::ConfigurationService;
 use model::{BuildCauseEnum, BuildDetails, BuildStatusEnum, Configuration, Project, Server};
@@ -94,6 +94,7 @@ fn lock_state(state: &Arc<Mutex<AppState>>) -> MutexGuard<'_, AppState> {
 
 /// The dialog windows. Like the original forms, each one is created once and
 /// shown/hidden on demand.
+#[derive(Clone)]
 struct Windows {
     settings: Rc<SettingsWindow>,
     edit_server: Rc<EditServerWindow>,
@@ -1637,6 +1638,68 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
 }
 
 // ---------------------------------------------------------------------------
+// Tray events
+// ---------------------------------------------------------------------------
+
+/// Shows or restores the main window (original: `MainForm.ShowOrFocus`).
+///
+/// Documented deviation: Slint offers no API to raise or focus an already
+/// visible window, so this un-minimizes and (re-)shows the window instead.
+fn show_or_focus(ui: &AppWindow) {
+    let window = ui.window();
+    window.set_minimized(false);
+    if let Err(e) = window.show() {
+        log::error!("Could not show the main window: {e}");
+    }
+}
+
+/// Handles a tray click/menu selection on the UI thread (original:
+/// `TrayNotifier`: `notifyIcon_MouseDoubleClick`, the Open / Settings /
+/// Refresh / About / Exit menu `Click` handlers).
+fn handle_tray_event(
+    event: tray::TrayEvent,
+    ui: &AppWindow,
+    services: &Services,
+    windows: &Windows,
+) {
+    match event {
+        // original: notifyIcon_MouseDoubleClick -> ShowOrFocus (single click
+        // is deactivated in TrayNotifier; Linux SNI has no double click).
+        tray::TrayEvent::OpenRequested | tray::TrayEvent::Menu(1) => show_or_focus(ui),
+        // original: settingsMenuItem_Click -> SettingsForm.ShowDialog
+        tray::TrayEvent::Menu(2) => {
+            if let Err(e) = populate_settings(services, &windows.settings) {
+                log::error!("Could not load the settings dialog: {e}");
+            }
+            if let Err(e) = windows.settings.show() {
+                log::error!("Could not show the settings dialog: {e}");
+            }
+        }
+        // original: refreshMenuItem_Click -> ProjectsUpdateService.UpdateProjects
+        tray::TrayEvent::Menu(3) => {
+            services.updater.borrow().refresh_all();
+            ui.set_status_text("".into());
+            if let Err(e) = refresh_rows(ui, &services.config, &services.state) {
+                log::error!("Could not refresh the projects grid: {e}");
+            }
+        }
+        // original: aboutMenuItem_Click -> AboutForm.ShowDialog
+        tray::TrayEvent::Menu(4) => {
+            if let Err(e) = windows.about.show() {
+                log::error!("Could not show the About dialog: {e}");
+            }
+        }
+        // original: exitToolStripMenuItem_Click -> Application.Exit
+        tray::TrayEvent::Menu(5) => {
+            if let Err(e) = slint::quit_event_loop() {
+                log::error!("Could not quit the event loop: {e}");
+            }
+        }
+        other => log::warn!("Unknown tray event: {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -1654,7 +1717,6 @@ fn main() -> Result<()> {
 
     let config_service = Arc::new(ConfigurationService::new()?);
 
-    // Tray (original: NotifyIcon + context menu).
     // Tray (original: NotifyIcon + context menu + UpdateNotifierStartup).
     let tray_hub = Arc::new(Mutex::new(tray::TrayHub::new()?));
 
@@ -1706,6 +1768,57 @@ fn main() -> Result<()> {
     // Initial grid fill (original: MainForm constructor -> LoadProjects).
     refresh_rows(&ui, &services.config, &services.state)?;
     wire_callbacks(&ui, &services, &windows);
+
+    // Close to the tray (original: JenkinsTrayForm_FormClosing -> e.Cancel =
+    // true; Hide()). Windows always shows the NotifyIcon; without a tray host
+    // (e.g. under WSLg) hiding would strand the app, so closing quits instead.
+    ui.window().on_close_requested({
+        let tray = services.tray.clone();
+        move || {
+            let has_tray = tray
+                .lock()
+                .map(|tray| tray.can_show_icon())
+                .unwrap_or(false);
+            log::info!("Window close requested (tray icon visible: {has_tray})");
+            if has_tray {
+                return CloseRequestResponse::HideWindow;
+            }
+            log::info!(
+                "No tray icon available: closing the window exits \
+                 (the original hides to the tray)"
+            );
+            if let Err(e) = slint::quit_event_loop() {
+                log::error!("Could not quit the event loop: {e}");
+            }
+            CloseRequestResponse::HideWindow
+        }
+    });
+
+    // Tray clicks/menus (original: the TrayNotifier event handlers) arrive on
+    // a channel and are drained on the UI thread by a Slint timer.
+    let (tray_events_tx, tray_events_rx) = std::sync::mpsc::channel::<tray::TrayEvent>();
+    if let Ok(mut tray) = services.tray.lock() {
+        tray.set_event_sender(tray_events_tx);
+    }
+    let _tray_events_timer = slint::Timer::default();
+    _tray_events_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(100),
+        {
+            let ui = ui.as_weak();
+            let services = services.clone();
+            let windows = windows.clone();
+            move || {
+                let Some(ui) = ui.upgrade() else {
+                    return;
+                };
+                while let Ok(event) = tray_events_rx.try_recv() {
+                    handle_tray_event(event, &ui, &services, &windows);
+                }
+            }
+        },
+    );
+
 
     // ProjectsUpdated event (original: MainForm.OnProjectsUpdated,
     // TrayNotifier.updateService_ProjectsUpdated and

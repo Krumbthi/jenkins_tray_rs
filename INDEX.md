@@ -1,7 +1,7 @@
 # Codebase Index: jenkins_tray
 
-> Generated: 2026-10-12 08:21:52 UTC | Files: 14 | Lines: 5633
-> Languages: Markdown (3), Rust (10), TOML (1)
+> Generated: 2026-10-12 09:48:41 UTC | Files: 16 | Lines: 6914
+> Languages: Markdown (3), Rust (12), TOML (1)
 
 ## Directory Structure
 
@@ -22,6 +22,9 @@ jenkins_tray/
     model.rs
     notifications.rs
     projects_updater.rs
+    tray/
+      ksni_backend.rs
+      win32_backend.rs
     tray.rs
 ```
 
@@ -32,6 +35,8 @@ jenkins_tray/
 **Cargo.toml**
 - `[package]`
 - `[dependencies]`
+- `[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]`
+- `[target.'cfg(windows)'.dependencies]`
 - `[build-dependencies]`
 - `[profile.release]`
 
@@ -115,14 +120,23 @@ jenkins_tray/
 - `pub type ProjectsUpdatedHandler = Arc<dyn Fn() + Send + Sync>`
 - `pub struct ProjectsUpdateService`
 
+**src/tray/ksni_backend.rs**
+- `pub struct KsniBackend`
+
+**src/tray/win32_backend.rs**
+- `pub struct Win32Backend`
+
 **src/tray.rs**
 - `pub const MAX_TOOLTIP_LENGTH: usize = 127`
 - `pub enum NotificationKind`
+- `pub enum TrayEvent`
+- `pub type TrayEventSender = std::sync::mpsc::Sender<TrayEvent>`
 - `pub trait TrayBackend: Send + Sync`
 - `pub struct MenuItem`
 - `pub const TRAY_MENU_ITEMS: &[(&str, u32)] = &[ ("Open", 1), ("Settings", 2), ("Refresh", 3), ("About", 4), ("Exit", 5), ]`
 - `pub struct StubTrayBackend`
-- `pub fn create_tray_backend() -> Result<Box<dyn TrayBackend>>`
+- `pub fn create_tray_backend() -> Box<dyn TrayBackend>`
+- `pub fn status_icon_rgba(status: &BuildStatus, size: u32) -> Vec<u8>`
 - `pub struct TrayNotifierState`
 - `pub struct TrayHub`
 
@@ -130,7 +144,7 @@ jenkins_tray/
 
 ## Cargo.toml
 
-**Language:** TOML | **Size:** 683 B | **Lines:** 27
+**Language:** TOML | **Size:** 1.6 KB | **Lines:** 48
 
 **Imports:**
 - `slint`
@@ -151,7 +165,7 @@ jenkins_tray/
 
 ## INDEX.md
 
-**Language:** Markdown | **Size:** 18.1 KB | **Lines:** 635
+**Language:** Markdown | **Size:** 23.6 KB | **Lines:** 844
 
 **Declarations:**
 
@@ -336,7 +350,7 @@ jenkins_tray/
 
 ## src/main.rs
 
-**Language:** Rust | **Size:** 70.0 KB | **Lines:** 1762
+**Language:** Rust | **Size:** 74.5 KB | **Lines:** 1875
 
 **Imports:**
 - `std::cell::RefCell`
@@ -345,7 +359,7 @@ jenkins_tray/
 - `std::sync::{Arc, Mutex, MutexGuard}`
 - `anyhow::Result`
 - `chrono::{Duration, Local, TimeZone}`
-- `slint::{ComponentHandle, ModelRc, VecModel}`
+- `slint::{CloseRequestResponse, ComponentHandle, ModelRc, VecModel}`
 - `config::ConfigurationService`
 - `model::{BuildCauseEnum, BuildDetails, BuildStatusEnum, Configuration, Project, Server}`
 - `notifications::NotificationService`
@@ -430,6 +444,10 @@ jenkins_tray/
 `fn show_message_box(message_box: &slint::Weak<MessageBoxWindow>, caption: &str, message: &str)`
 
 `fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows)`
+
+`fn show_or_focus(ui: &AppWindow)`
+
+`fn handle_tray_event( event: tray::TrayEvent, ui: &AppWindow, services: &Services, windows: &Windows, )`
 
 `fn main() -> Result<()>`
 
@@ -567,9 +585,188 @@ jenkins_tray/
 
 ---
 
+## src/tray/ksni_backend.rs
+
+**Language:** Rust | **Size:** 9.4 KB | **Lines:** 294
+
+**Imports:**
+- `std::collections::HashMap`
+- `anyhow::{Context, Result}`
+- `crate::model::BuildStatus`
+- `super::{
+    MenuItem, NotificationKind, TrayBackend, TrayEvent, TrayEventSender, TRAY_MENU_ITEMS,
+    status_icon_rgba,
+}`
+
+**Declarations:**
+
+`const ICON_SIZES: [u32`
+
+**`impl KsniBackend`**
+  `pub fn new() -> Self`
+
+
+**`impl TrayBackend for KsniBackend`**
+  `fn initialize(&mut self) -> Result<()>`
+
+  `fn update_icon(&self, status: &BuildStatus) -> Result<()>`
+
+  `fn set_tooltip(&self, text: &str) -> Result<()>`
+
+  `fn show_notification(&self, title: &str, message: &str, kind: NotificationKind) -> Result<()>`
+
+  `fn set_context_menu(&self, items: Vec<MenuItem>) -> Result<()>`
+
+  `fn set_event_sender(&mut self, sender: TrayEventSender)`
+
+  `fn can_show_icon(&self) -> bool`
+
+  `fn exit(&self) -> Result<()>`
+
+
+`struct SniTray`
+> Fields: `icons: Vec<ksni::Icon>`, `tooltip: String`, `menu_items: Vec<MenuItem>`, `sender: Option<TrayEventSender>`
+
+**`impl SniTray`**
+  `fn new() -> Self`
+
+
+**`impl ksni::Tray for SniTray`**
+  `fn id(&self) -> String`
+
+  `fn category(&self) -> ksni::Category`
+
+  `fn status(&self) -> ksni::Status`
+
+  `fn title(&self) -> String`
+
+  `fn icon_name(&self) -> String`
+
+  `fn icon_pixmap(&self) -> Vec<ksni::Icon>`
+
+  `fn tool_tip(&self) -> ksni::ToolTip`
+
+  `fn activate(&mut self, _x: i32, _y: i32)`
+
+  `fn menu(&self) -> Vec<ksni::MenuItem<Self>>`
+
+  `fn watcher_offline(&self, reason: ksni::OfflineReason) -> bool`
+
+  `fn watcher_online(&self)`
+
+
+`fn render_icons(status: &BuildStatus) -> Vec<ksni::Icon>`
+
+`fn watcher_on_bus() -> bool`
+
+`fn notify(title: &str, message: &str, kind: NotificationKind) -> Result<()>`
+
+---
+
+## src/tray/win32_backend.rs
+
+**Language:** Rust | **Size:** 17.2 KB | **Lines:** 472
+
+**Imports:**
+- `std::sync::atomic::{AtomicBool, Ordering}`
+- `std::sync::Mutex`
+- `anyhow::{anyhow, Context, Result}`
+- `windows::core::{w, PCWSTR}`
+- `windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, TRUE, WPARAM}`
+- `windows::Win32::Graphics::Gdi::{
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateBitmap, CreateDIBSection, DIB_RGB_COLORS,
+    DeleteObject,
+}`
+- `windows::Win32::System::LibraryLoader::GetModuleHandleW`
+- `windows::Win32::UI::Shell::{
+    NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_ERROR, NIIF_INFO, NIIF_WARNING, NIM_ADD,
+    NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW,
+}`
+- `windows::Win32::UI::WindowsAndMessaging::{
+    AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+    DestroyIcon, DestroyMenu, DestroyWindow, GetCursorPos, GetWindowLongPtrW, ICONINFO,
+    LoadCursorW, PostMessageW, RegisterClassExW, SetForegroundWindow, SetWindowLongPtrW,
+    TrackPopupMenuEx, WM_APP, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP,
+    WNDCLASSEXW, GWLP_USERDATA, HICON, HMENU, HWND_MESSAGE, IDC_ARROW, MF_CHECKED, MF_GRAYED,
+    MF_STRING, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, TPM_RETURNCMD,
+    WINDOW_EX_STYLE, WINDOW_STYLE,
+}`
+- `super::{
+    status_icon_rgba, MenuItem, NotificationKind, TrayBackend, TrayEvent, TrayEventSender,
+    TRAY_MENU_ITEMS,
+}`
+- *... and 1 more imports*
+
+**Declarations:**
+
+`const WM_TRAYICON: u32 = WM_APP + 1`
+
+`const TRAY_UID: u32 = 1`
+
+`const BALLOON_TIMEOUT_MS: u32 = 3000`
+
+`const TOOLTIP_UNITS: usize = 127`
+
+`const CLASS_NAME: PCWSTR = w!("JenkinsTrayTrayIcon")`
+
+`const WINDOW_NAME: PCWSTR = w!("Jenkins Tray")`
+
+`struct TrayCtx`
+> Fields: `sender: Mutex<Option<TrayEventSender>>`, `menu: Mutex<Option<HMENU>>`
+
+**`unsafe impl Send for Win32Backend`**
+
+**`unsafe impl Sync for Win32Backend`**
+
+**`impl Win32Backend`**
+  `pub fn new() -> Self`
+
+  `fn new_data(&self) -> Result<NOTIFYICONDATAW>`
+
+  `fn require_icon(&self) -> Result<NOTIFYICONDATAW>`
+
+
+**`impl TrayBackend for Win32Backend`**
+  `fn initialize(&mut self) -> Result<()>`
+
+  `fn update_icon(&self, status: &BuildStatus) -> Result<()>`
+
+  `fn set_tooltip(&self, text: &str) -> Result<()>`
+
+  `fn show_notification(&self, title: &str, message: &str, kind: NotificationKind) -> Result<()>`
+
+  `fn set_context_menu(&self, items: Vec<MenuItem>) -> Result<()>`
+
+  `fn set_event_sender(&mut self, sender: TrayEventSender)`
+
+  `fn can_show_icon(&self) -> bool`
+
+  `fn exit(&self) -> Result<()>`
+
+
+**`impl Drop for Win32Backend`**
+  `fn drop(&mut self)`
+
+
+`unsafe extern "system" fn wnd_proc( hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, ) -> LRESULT`
+
+`unsafe fn ctx_of(hwnd: HWND) -> Option<&'static TrayCtx>`
+
+`unsafe fn send_event(hwnd: HWND, event: TrayEvent)`
+
+`unsafe fn show_menu(hwnd: HWND)`
+
+`fn wide(text: &str) -> Vec<u16>`
+
+`fn copy_units(dest: &mut [u16], text: &str, max_units: usize)`
+
+`unsafe fn create_icon(rgba: &[u8], width: i32, height: i32) -> Result<HICON>`
+
+---
+
 ## src/tray.rs
 
-**Language:** Rust | **Size:** 16.1 KB | **Lines:** 447
+**Language:** Rust | **Size:** 22.9 KB | **Lines:** 619
 
 **Imports:**
 - `std::collections::HashMap`
@@ -578,6 +775,10 @@ jenkins_tray/
 - `crate::notifications::TrayNotifier`
 
 **Declarations:**
+
+`mod ksni_backend`
+
+`mod win32_backend`
 
 **`impl TrayBackend for StubTrayBackend`**
   `fn initialize(&mut self) -> Result<()>`
@@ -589,6 +790,10 @@ jenkins_tray/
   `fn show_notification(&self, title: &str, message: &str, kind: NotificationKind) -> Result<()>`
 
   `fn set_context_menu(&self, _items: Vec<MenuItem>) -> Result<()>`
+
+  `fn set_event_sender(&mut self, sender: TrayEventSender)`
+
+  `fn can_show_icon(&self) -> bool`
 
   `fn exit(&self) -> Result<()>`
 
@@ -629,6 +834,10 @@ jenkins_tray/
   `pub fn new() -> Result<Self>`
 
   `pub fn update(&mut self, config: &Configuration)`
+
+  `pub fn set_event_sender(&mut self, sender: TrayEventSender)`
+
+  `pub fn can_show_icon(&self) -> bool`
 
 
 `mod tests`

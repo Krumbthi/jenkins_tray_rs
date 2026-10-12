@@ -3,7 +3,14 @@
 //! Port of C# `UI/TrayNotifier.cs`: the worst-status computation, the tooltip
 //! text, the error/regression balloons and the acknowledged-status store live
 //! in [`TrayNotifierState`]; the platform rendering goes through
-//! [`TrayBackend`] (still a stub, so every call is logged).
+//! [`TrayBackend`] - a StatusNotifierItem ([`ksni`]) on Linux, a
+//! `Shell_NotifyIconW` backend on Windows ([`win32_backend`]) and
+//! [`StubTrayBackend`] elsewhere, where every call degrades to logging.
+//!
+//! The Linux tray is opportunistic only (Windows is the primary target per
+//! the original app): without a StatusNotifierWatcher - e.g. under WSLg -
+//! no icon is shown and closing the window exits instead of hiding to a
+//! tray, so the app is never stranded.
 
 use std::collections::HashMap;
 
@@ -12,12 +19,17 @@ use anyhow::Result;
 use crate::model::{AllBuildDetails, BuildStatus, BuildStatusEnum, Configuration, Project};
 use crate::notifications::TrayNotifier;
 
+#[cfg(all(unix, not(target_os = "macos")))]
+mod ksni_backend;
+#[cfg(windows)]
+mod win32_backend;
+
 /// Maximum tooltip length (original: TrayNotifier.MAX_TOOLTIP_LENGTH).
 pub const MAX_TOOLTIP_LENGTH: usize = 127;
 
 /// Icon severity of a balloon notification (original: ToolTipIcon). The
 /// original shows balloons with a 3000 ms timeout (error/regression) and a
-/// 10000 ms timeout (activity); the stub backend ignores both.
+/// 10000 ms timeout (activity).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationKind {
     /// Used by the (not yet ported) activity balloons.
@@ -26,6 +38,22 @@ pub enum NotificationKind {
     Warning,
     Error,
 }
+
+/// Something the user did on the tray icon (original: the
+/// `notifyIcon_MouseDoubleClick` / context-menu `Click` handlers in
+/// `TrayNotifier`). Backends push these into a channel that main.rs drains on
+/// the UI thread, so no backend ever touches Slint from a foreign thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayEvent {
+    /// A tray context menu entry was clicked (see [`TRAY_MENU_ITEMS`] ids).
+    Menu(u32),
+    /// The tray icon was clicked (original: `notifyIcon_MouseDoubleClick` ->
+    /// `ShowOrFocus`; the original's single click is deactivated).
+    OpenRequested,
+}
+
+/// Channel sending side for [`TrayEvent`]s.
+pub type TrayEventSender = std::sync::mpsc::Sender<TrayEvent>;
 
 /// Trait for platform-specific tray implementations.
 pub trait TrayBackend: Send + Sync {
@@ -42,19 +70,24 @@ pub trait TrayBackend: Send + Sync {
         kind: NotificationKind,
     ) -> Result<()>;
     fn set_context_menu(&self, items: Vec<MenuItem>) -> Result<()>;
+    /// Delivers tray clicks/menu selections to the UI thread.
+    fn set_event_sender(&mut self, sender: TrayEventSender);
+    /// Whether a tray icon is actually visible right now. The main window uses
+    /// it on close: with an icon the window hides to the tray (original
+    /// `JenkinsTrayForm_FormClosing`), without one closing quits the app so
+    /// the user is never stranded without a way back in.
+    fn can_show_icon(&self) -> bool;
     fn exit(&self) -> Result<()>;
 }
 
 #[derive(Debug, Clone)]
 pub struct MenuItem {
-    // Read by the real tray backend; the stub only counts the menu.
-    #[allow(dead_code)]
     pub id: u32,
-    #[allow(dead_code)]
     pub label: String,
-    #[allow(dead_code)]
     pub enabled: bool,
-    #[allow(dead_code)]
+    /// Only rendered by the Windows backend - the original tray menu has no
+    /// checkmarks and SNI `StandardItem`s cannot show one.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub checked: bool,
 }
 
@@ -89,6 +122,14 @@ impl TrayBackend for StubTrayBackend {
     fn set_context_menu(&self, _items: Vec<MenuItem>) -> Result<()> {
         Ok(())
     }
+    fn set_event_sender(&mut self, sender: TrayEventSender) {
+        // No tray to click: drop the sender (original: no NotifyIcon either
+        // when the backend is a stub).
+        drop(sender);
+    }
+    fn can_show_icon(&self) -> bool {
+        false
+    }
     fn exit(&self) -> Result<()> {
         Ok(())
     }
@@ -101,8 +142,95 @@ impl TrayNotifier for StubTrayBackend {
     }
 }
 
-pub fn create_tray_backend() -> Result<Box<dyn TrayBackend>> {
-    Ok(Box::new(StubTrayBackend))
+/// The platform tray backend (original: `NotifyIcon` in `TrayNotifier`).
+///
+/// Linux gets a StatusNotifierItem ([`ksni_backend`]), Windows a
+/// `Shell_NotifyIconW` implementation ([`win32_backend`]); everything else
+/// falls back to the logging stub.
+pub fn create_tray_backend() -> Box<dyn TrayBackend> {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Box::new(ksni_backend::KsniBackend::new())
+    }
+    #[cfg(windows)]
+    {
+        Box::new(win32_backend::Win32Backend::new())
+    }
+    #[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
+    {
+        Box::new(StubTrayBackend)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tray icon rendering
+// ---------------------------------------------------------------------------
+
+/// Draws the status ball as straight-alpha RGBA pixels - the vector
+/// replacement for the original `StatusIcons/*.gif` tray icons, using the
+/// same palette as the main grid's `StatusBall`.
+pub fn status_icon_rgba(status: &BuildStatus, size: u32) -> Vec<u8> {
+    let (r, g, b) = match status.value {
+        BuildStatusEnum::Failed => (0xe5u8, 0x39, 0x35),
+        BuildStatusEnum::Successful => (0x43, 0x9f, 0xe0),
+        BuildStatusEnum::Unstable => (0xfb, 0x8c, 0x00),
+        BuildStatusEnum::Aborted => (0x9e, 0x9e, 0x9e),
+        BuildStatusEnum::Disabled => (0x61, 0x61, 0x61),
+        BuildStatusEnum::Indeterminate => (0xbd, 0xbd, 0xbd),
+        BuildStatusEnum::Unknown => (0x8e, 0x24, 0xaa),
+    };
+    let s = size as f32;
+    let center = s / 2.0;
+    let radius = center - 0.5;
+    // like the grid: 1px border on a 16px ball, scaled up
+    let border = (s / 16.0).max(1.0);
+    // #000000 when stuck, #ffffffcc otherwise (grid StatusBall)
+    let (border_col, border_alpha): ([f32; 3], f32) = if status.is_stuck {
+        ([0.0, 0.0, 0.0], 1.0)
+    } else {
+        ([1.0, 1.0, 1.0], 0.8)
+    };
+
+    let mut out = vec![0u8; (size * size * 4) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            let dx = x as f32 + 0.5 - center;
+            let dy = y as f32 + 0.5 - center;
+            let dist = (dx * dx + dy * dy).sqrt();
+            // anti-aliased edge of the disc
+            let cover = (radius + 0.5 - dist).clamp(0.0, 1.0);
+            if cover <= 0.0 {
+                continue;
+            }
+
+            let (mut col, mut alpha) = if dist > radius - border {
+                (border_col, border_alpha)
+            } else {
+                (
+                    [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0],
+                    1.0,
+                )
+            };
+            // Static white ring while a build is in progress (the grid pulses,
+            // the original tray GIFs animate - a single frame here).
+            if status.is_in_progress {
+                let ring_mid = radius - border - radius * 0.3;
+                let ring_width = (s * 0.09).max(1.0);
+                if (dist - ring_mid).abs() < ring_width {
+                    col = [1.0, 1.0, 1.0];
+                    alpha = 0.75;
+                }
+            }
+
+            let a = cover * alpha;
+            let i = ((y * size + x) * 4) as usize;
+            out[i] = (col[0] * 255.0 * a).round() as u8;
+            out[i + 1] = (col[1] * 255.0 * a).round() as u8;
+            out[i + 2] = (col[2] * 255.0 * a).round() as u8;
+            out[i + 3] = (a * 255.0).round() as u8;
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -406,10 +534,15 @@ pub struct TrayHub {
 
 impl TrayHub {
     /// Create the tray (original: Spring object graph + UpdateNotifierStartup).
+    ///
+    /// A failing backend never prevents startup - the original's `NotifyIcon`
+    /// is created the same way and every later call degrades to logging.
     pub fn new() -> Result<Self> {
-        let mut backend = create_tray_backend()?;
-        backend.initialize()?;
-        backend.set_context_menu(
+        let mut backend = create_tray_backend();
+        if let Err(e) = backend.initialize() {
+            log::warn!("Tray icon unavailable, degrading to log output: {e:#}");
+        }
+        if let Err(e) = backend.set_context_menu(
             TRAY_MENU_ITEMS
                 .iter()
                 .map(|&(label, id)| MenuItem {
@@ -419,15 +552,30 @@ impl TrayHub {
                     checked: false,
                 })
                 .collect(),
-        )?;
+        ) {
+            log::warn!("Tray menu unavailable: {e:#}");
+        }
         let state = TrayNotifierState::new();
-        state.startup(&*backend)?;
+        if let Err(e) = state.startup(&*backend) {
+            log::warn!("Tray startup state unavailable: {e:#}");
+        }
         Ok(Self { state, backend })
     }
 
     /// Refresh icon/tooltip/balloons for the current configuration.
     pub fn update(&mut self, config: &Configuration) {
         self.state.update(config, &*self.backend);
+    }
+
+    /// Forwards tray clicks/menu selections (original: the `TrayNotifier`
+    /// event handlers wired in `TrayNotifier.Initialize`).
+    pub fn set_event_sender(&mut self, sender: TrayEventSender) {
+        self.backend.set_event_sender(sender);
+    }
+
+    /// Whether a tray icon is visible right now (see [`TrayBackend::can_show_icon`]).
+    pub fn can_show_icon(&self) -> bool {
+        self.backend.can_show_icon()
     }
 }
 
@@ -443,5 +591,29 @@ mod tests {
         assert!(truncated.ends_with(" ..."));
 
         assert_eq!(truncate_tooltip("short"), "short");
+    }
+
+    #[test]
+    fn status_icon_renders_ball() {
+        let status = BuildStatus {
+            value: BuildStatusEnum::Failed,
+            is_in_progress: false,
+            is_stuck: false,
+        };
+        let size = 32;
+        let pixels = status_icon_rgba(&status, size);
+        assert_eq!(pixels.len(), (size * size * 4) as usize);
+        // corner stays transparent, center is the failed ball color
+        assert_eq!(&pixels[0..4], &[0, 0, 0, 0]);
+        let center = (((size / 2) * size + size / 2) * 4) as usize;
+        let [r, g, b, a] = [
+            pixels[center],
+            pixels[center + 1],
+            pixels[center + 2],
+            pixels[center + 3],
+        ] else {
+            panic!("slice must be 4 bytes");
+        };
+        assert_eq!([r, g, b, a], [0xe5, 0x39, 0x35, 255]);
     }
 }

@@ -1,6 +1,6 @@
 # Codebase Index: jenkins_tray
 
-> Generated: 2026-10-12 06:36:14 UTC | Files: 14 | Lines: 5546
+> Generated: 2026-10-12 08:21:52 UTC | Files: 14 | Lines: 5633
 > Languages: Markdown (3), Rust (10), TOML (1)
 
 ## Directory Structure
@@ -151,7 +151,7 @@ jenkins_tray/
 
 ## INDEX.md
 
-**Language:** Markdown | **Size:** 17.9 KB | **Lines:** 633
+**Language:** Markdown | **Size:** 18.1 KB | **Lines:** 635
 
 **Declarations:**
 
@@ -336,7 +336,7 @@ jenkins_tray/
 
 ## src/main.rs
 
-**Language:** Rust | **Size:** 66.1 KB | **Lines:** 1677
+**Language:** Rust | **Size:** 70.0 KB | **Lines:** 1762
 
 **Imports:**
 - `std::cell::RefCell`
@@ -379,7 +379,7 @@ jenkins_tray/
 `fn lock_state(state: &Arc<Mutex<AppState>>) -> MutexGuard<'_, AppState>`
 
 `struct Windows`
-> Fields: `settings: Rc<SettingsWindow>`, `edit_server: Rc<EditServerWindow>`, `about: Rc<AboutWindow>`, `auth_token: Rc<AuthTokenWindow>`, `claim_build: Rc<ClaimBuildWindow>`
+> Fields: `settings: Rc<SettingsWindow>`, `edit_server: Rc<EditServerWindow>`, `about: Rc<AboutWindow>`, `auth_token: Rc<AuthTokenWindow>`, `claim_build: Rc<ClaimBuildWindow>`, `message_box: Rc<MessageBoxWindow>`
 
 `fn server_display_text(server: &Server) -> String`
 
@@ -426,6 +426,8 @@ jenkins_tray/
 `fn console_page(project: &Project) -> String`
 
 `fn open_url(url: &str)`
+
+`fn show_message_box(message_box: &slint::Weak<MessageBoxWindow>, caption: &str, message: &str)`
 
 `fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows)`
 

@@ -9,7 +9,7 @@
 //! The Jenkins client, the update service, the notification buckets and the
 //! tray notifier state are ports of `JenkinsService`, `ProjectsUpdateService`,
 //! `AllServersStatus`/`NotificationService` and `TrayNotifier`; where the Rust
-//! backend is still a stub (system tray rendering, updater, claim service),
+//! backend is still a stub (system tray rendering, application update service),
 //! the callback degrades to logging - the original behavior is documented at
 //! each call site.
 
@@ -100,6 +100,7 @@ struct Windows {
     about: Rc<AboutWindow>,
     auth_token: Rc<AuthTokenWindow>,
     claim_build: Rc<ClaimBuildWindow>,
+    message_box: Rc<MessageBoxWindow>,
 }
 
 // ---------------------------------------------------------------------------
@@ -704,6 +705,30 @@ fn open_url(url: &str) {
     }
 }
 
+/// Shows the generic message box, callable from any thread
+/// (original: `XtraMessageBox.Show(message, caption, MessageBoxButtons.OK)`
+/// and `MessageBox.Show(message, caption, OK, Error)`).
+///
+/// Documented deviation: the original dialogs are modal, this one is not.
+fn show_message_box(message_box: &slint::Weak<MessageBoxWindow>, caption: &str, message: &str) {
+    let message_box = message_box.clone();
+    let caption = caption.to_string();
+    let message = message.to_string();
+    if let Err(e) = slint::invoke_from_event_loop(move || {
+        let Some(message_box) = message_box.upgrade() else {
+            return;
+        };
+        message_box.set_caption(caption.into());
+        message_box.set_message(message.into());
+        message_box.set_yes_no(false);
+        if let Err(e) = message_box.show() {
+            log::error!("Could not show the message box: {e}");
+        }
+    }) {
+        log::error!("Could not schedule the message box: {e}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Callback wiring
 // ---------------------------------------------------------------------------
@@ -846,6 +871,7 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
         let ui = ui.as_weak();
         let auth_token = windows.auth_token.clone();
         let claim_build = windows.claim_build.clone();
+        let message_box = windows.message_box.as_weak();
         move |action| {
             let ui = ui.unwrap();
             let Some((server_url, project_url)) = selected_target(&ui, &services.state) else {
@@ -878,11 +904,21 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                     let server = server.clone();
                     let project = project.clone();
                     let name = project.name.clone();
+                    let message_box = message_box.clone();
                     services.runtime.spawn(async move {
                         if let Err(e) =
                             jenkins_client::trigger_build(&client, &server, &project).await
                         {
-                            log::error!("Failed to trigger a build of {name}: {e}");
+                            // original: LoggingHelper.LogError +
+                            // XtraMessageBox.Show(RunBuildFailed_Text,
+                            // RunBuildFailed_Caption)
+                            let cause = errors::root_cause(&e);
+                            log::error!("Failed to trigger a build of {name}: {cause}");
+                            show_message_box(
+                                &message_box,
+                                "Error",
+                                &format!("Failed running build: {cause}."),
+                            );
                         } else {
                             log::info!("Build triggered for {name}");
                         }
@@ -896,11 +932,23 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                         let server = server.clone();
                         let project = project.clone();
                         let name = project.name.clone();
+                        let message_box = message_box.clone();
                         services.runtime.spawn(async move {
                             if let Err(e) =
                                 jenkins_client::stop_build(&client, &server, &project).await
                             {
-                                log::error!("Failed to stop the build of {name}: {e}");
+                                // original: LoggingHelper.LogError +
+                                // XtraMessageBox.Show(StopBuildFailed_Text,
+                                // StopBuildFailed_Caption)
+                                let cause = errors::root_cause(&e);
+                                log::error!("Failed to stop the build of {name}: {cause}");
+                                show_message_box(
+                                    &message_box,
+                                    "Error",
+                                    &format!(
+                                        "Failed stopping / cancelling queued build: {cause}."
+                                    ),
+                                );
                             } else {
                                 log::info!("Build stop requested for {name}");
                             }
@@ -915,11 +963,23 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                         let client = services.clients.for_server(server).clone();
                         let server = server.clone();
                         let url = server.url.clone();
+                        let message_box = message_box.clone();
                         services.runtime.spawn(async move {
                             if let Err(e) =
                                 jenkins_client::remove_from_queue(&client, &server, queue_id).await
                             {
-                                log::error!("Failed to cancel the queued build of {url}: {e}");
+                                // original: StopBuildFailed box - the queue
+                                // branch of stopBuildMenuItem_Click shares the
+                                // same catch.
+                                let cause = errors::root_cause(&e);
+                                log::error!("Failed to cancel the queued build of {url}: {cause}");
+                                show_message_box(
+                                    &message_box,
+                                    "Error",
+                                    &format!(
+                                        "Failed stopping / cancelling queued build: {cause}."
+                                    ),
+                                );
                             } else {
                                 log::info!("Queue item {queue_id} cancelled ({url})");
                             }
@@ -1488,6 +1548,7 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
     {
         let services = services.clone();
         let claim_build = windows.claim_build.as_weak();
+        let message_box = windows.message_box.as_weak();
         windows.claim_build.on_accepted(move || {
             let claim_build = claim_build.unwrap();
             let reason = claim_build.get_reason().to_string();
@@ -1505,6 +1566,7 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                             let server = server.clone();
                             let project = project.clone();
                             let cache = services.updater.borrow().cache();
+                            let message_box = message_box.clone();
                             services.runtime.spawn(async move {
                                 let name = project.name.clone();
                                 if let Err(e) = jenkins_client::claim_build(
@@ -1517,10 +1579,12 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                                 )
                                 .await
                                 {
-                                    // original: MessageBox.Show(message,
-                                    // "Claim failed", OK, Error) - only
-                                    // logged here.
-                                    log::error!("Claim failed for {name}: {e}");
+                                    // original: MessageBox.Show(webEx.Message,
+                                    // "Claim failed", OK, Error) in
+                                    // ClaimService.ClaimBuild (WebException).
+                                    let cause = errors::root_cause(&e);
+                                    log::error!("Claim failed for {name}: {cause}");
+                                    show_message_box(&message_box, "Claim failed", &cause);
                                 } else {
                                     log::info!("Claimed build {build_number} of {name}");
                                 }
@@ -1540,6 +1604,26 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
         windows.claim_build.on_canceled(move || {
             if let Err(e) = claim_build.unwrap().hide() {
                 log::error!("Could not close the claim build dialog: {e}");
+            }
+        });
+    }
+
+    // --- Message box (original: XtraMessageBox OK / Yes / No buttons) ------
+
+    {
+        let message_box = windows.message_box.as_weak();
+        windows.message_box.on_accepted(move || {
+            if let Err(e) = message_box.unwrap().hide() {
+                log::error!("Could not close the message box: {e}");
+            }
+        });
+    }
+
+    {
+        let message_box = windows.message_box.as_weak();
+        windows.message_box.on_declined(move || {
+            if let Err(e) = message_box.unwrap().hide() {
+                log::error!("Could not close the message box: {e}");
             }
         });
     }
@@ -1603,6 +1687,7 @@ fn main() -> Result<()> {
         about: Rc::new(AboutWindow::new()?),
         auth_token: Rc::new(AuthTokenWindow::new()?),
         claim_build: Rc::new(ClaimBuildWindow::new()?),
+        message_box: Rc::new(MessageBoxWindow::new()?),
     };
     windows
         .about

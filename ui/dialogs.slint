@@ -1,7 +1,62 @@
 //! Small dialogs - migrated from the original C#
-//! `JenkinsTray.UI.AuthenticationTokenForm` and `JenkinsTray.UI.ClaimBuildForm`.
+//! `JenkinsTray.UI.AuthenticationTokenForm`, `JenkinsTray.UI.ClaimBuildForm`
+//! and the `XtraMessageBox.Show` / `MessageBox.Show` error boxes.
 
 import { Button, CheckBox, LineEdit, TextEdit } from "std-widgets.slint";
+
+/// Generic message box (original: `XtraMessageBox.Show(message, caption)`
+/// with `MessageBoxButtons.OK`, and `MessageBoxButtons.YesNo` for the update
+/// prompt). The caption is shown as the window title.
+///
+/// Documented deviation: the original dialogs are modal; Slint windows are
+/// not, so the message box does not block the main window.
+export component MessageBoxWindow inherits Window {
+    in property <string> caption: "Jenkins Tray";
+    in-out property <string> message;
+    in property <bool> yes-no: false;
+
+    callback accepted(); // OK / Yes
+    callback declined(); // No (yes-no only)
+
+    title: root.caption;
+    preferred-width: 440px;
+    min-width: 320px;
+    preferred-height: 170px;
+    min-height: 120px;
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 10px;
+
+        Text {
+            text: root.message;
+            wrap: word-wrap;
+            vertical-alignment: top;
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle { horizontal-stretch: 1; }
+            if (!root.yes-no) : Button {
+                text: @tr("OK");
+                width: 90px;
+                clicked => { root.accepted(); }
+            }
+            if (root.yes-no) : Button {
+                text: @tr("Yes");
+                width: 90px;
+                clicked => { root.accepted(); }
+            }
+            if (root.yes-no) : Button {
+                text: @tr("No");
+                width: 90px;
+                clicked => { root.declined(); }
+            }
+        }
+    }
+}
 
 /// Authentication token dialog (context menu: "Set authentication token").
 export component AuthTokenWindow inherits Window {

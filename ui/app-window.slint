@@ -10,9 +10,9 @@ import { ProjectRow, Ui, TableHeader, ProjectRowView } from "common.slint";
 import { SettingsWindow } from "settings.slint";
 import { EditServerWindow } from "edit-server.slint";
 import { AboutWindow } from "about.slint";
-import { AuthTokenWindow, ClaimBuildWindow } from "dialogs.slint";
+import { AuthTokenWindow, ClaimBuildWindow, MessageBoxWindow } from "dialogs.slint";
 
-export { SettingsWindow, EditServerWindow, AboutWindow, AuthTokenWindow, ClaimBuildWindow }
+export { SettingsWindow, EditServerWindow, AboutWindow, AuthTokenWindow, ClaimBuildWindow, MessageBoxWindow }
 
 export component AppWindow inherits Window {
     title: "Jenkins Tray";
@@ -153,6 +153,8 @@ export component AppWindow inherits Window {
                         activated => { root.menu-action("console"); }
                     }
                     MenuItem {
+                        // original: hidden while a build is in progress
+                        // (Slint menus cannot hide items, so it is disabled).
                         title: @tr("Run build");
                         enabled: root.has-selection && !root.sel-in-progress;
                         activated => { root.menu-action("run-build"); }
@@ -166,8 +168,12 @@ export component AppWindow inherits Window {
                     }
                     MenuSeparator {}
                     MenuItem {
+                        // original: disabled while the project itself is
+                        // acknowledged, enabled only for stuck/indeterminate
+                        // statuses and above.
                         title: @tr("Acknowledge status");
-                        enabled: root.has-selection && root.sel-not-ok;
+                        enabled: root.has-selection && root.sel-not-ok
+                            && !root.selected-ack-project;
                         checkable: true;
                         checked <=> root.selected-ack-status;
                         activated => { root.menu-action("ack-status"); }
@@ -187,6 +193,9 @@ export component AppWindow inherits Window {
                     }
                     MenuSeparator {}
                     MenuItem {
+                        // original: hidden unless the Claim integration is
+                        // enabled (Slint menus cannot hide items, so it is
+                        // disabled instead).
                         title: @tr("Claim this build");
                         enabled: root.sel-claimable;
                         activated => { root.menu-action("claim-build"); }

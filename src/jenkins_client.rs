@@ -142,6 +142,48 @@ pub fn concat_urls(base: &str, fragments: &[&str]) -> String {
     res
 }
 
+/// Splits an absolute URL into its `scheme://host[:port]` origin and the
+/// path (including query), e.g. `("http://h:8080", "/job/x/?a=1")`.
+fn split_origin(url: &str) -> Option<(&str, &str)> {
+    let scheme_end = url.find("://")?;
+    let after_scheme = scheme_end + 3;
+    match url[after_scheme..].find('/') {
+        Some(offset) => {
+            let split = after_scheme + offset;
+            Some((&url[..split], &url[split..]))
+        }
+        None => Some((url, "")),
+    }
+}
+
+/// Re-roots an absolute URL at the origin of the configured server.
+///
+/// Jenkins builds every URL in its answers (job lists, build links, ...) from
+/// its own "Jenkins URL" system property. Here that value contains the short
+/// hostname `eudeued01rud001`, which only resolves with the corporate DNS
+/// suffix search the Windows resolver applies - the WSL/Linux resolver has no
+/// search domain, so every URL taken verbatim from a Jenkins answer fails
+/// with a DNS error while the FQDN the user entered in the configuration
+/// works. All requests therefore use the origin from the configuration and
+/// only keep the path from the Jenkins answer.
+///
+/// The original application has no such step: it runs on Windows, where
+/// `getaddrinfo` appends the primary DNS suffix before giving up
+/// (deviation from the original).
+pub fn rebase_url(url: &str, server: &Server) -> String {
+    let server_origin = split_origin(&server.url).map(|(origin, _)| origin).unwrap_or("");
+    match split_origin(url) {
+        // Absolute URL on a different origin: keep only its path.
+        Some((origin, path)) if !server_origin.is_empty() && origin != server_origin => {
+            format!("{server_origin}{path}")
+        }
+        // Relative answer: attach it to the configured server.
+        None => concat_urls(&server.url, &[url]),
+        // Already on the configured origin.
+        Some(_) => url.to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // XML cache (original: JenkinsService.cache / visitedURLs / RecycleCache)
 // ---------------------------------------------------------------------------
@@ -298,14 +340,15 @@ fn collect_projects<'a>(
     Box::pin(async move {
         let xml = get_text(client, credentials, list_url).await?;
         for job in parse_job_list(&xml)? {
+            let job_url = rebase_url(&job.url, server);
             match job.color {
                 // A real job: keep it (the original de-duplicates by server+name).
                 Some(_) => {
                     if !projects.iter().any(|project| project.name == job.name) {
-                        log::debug!("Found project {} ({})", job.name, job.url);
+                        log::debug!("Found project {} ({})", job.name, job_url);
                         projects.push(Project {
                             name: job.name,
-                            url: job.url,
+                            url: job_url,
                             server: Some(server.url.clone()),
                             ..Default::default()
                         });
@@ -313,7 +356,7 @@ fn collect_projects<'a>(
                 }
                 // No color = folder: recurse into its own job list.
                 None => {
-                    let url = concat_urls(&job.url, &[JOB_LIST_TREE]);
+                    let url = concat_urls(&job_url, &[JOB_LIST_TREE]);
                     collect_projects(client, credentials, &url, server, projects).await?;
                 }
             }
@@ -390,7 +433,9 @@ pub async fn update_project(
     cache: &SharedCache,
 ) -> Result<ProjectState> {
     let credentials = Credentials::from(server);
-    let url = concat_urls(&project.url, &["api/xml"]);
+    // The job document is requested at the configured origin even when the
+    // project URL saved in the configuration uses another host name.
+    let url = concat_urls(&rebase_url(&project.url, server), &["api/xml"]);
     let xml = download(client, &credentials, &url, None).await?;
     let job = parse_job_state(&xml)?;
 
@@ -421,10 +466,15 @@ pub async fn update_project(
         let Some(build_url) = build_url else {
             continue;
         };
+        // Build links in the job document also use the Jenkins-internal host.
+        let build_url = rebase_url(&build_url, server);
         match get_build_details(client, &credentials, &build_url, cache).await {
             Ok(build) => *slot = Some(build),
             Err(error) => {
-                log::error!("Error getting build details from {build_url}: {error}");
+                log::error!(
+                    "Error getting build details from {build_url}: {}",
+                    crate::errors::root_cause(&error)
+                );
                 all_builds_loaded = false;
             }
         }
@@ -619,7 +669,7 @@ pub async fn trigger_build(
     project: &Project,
 ) -> Result<()> {
     let credentials = Credentials::from(server);
-    let url = concat_urls(&project.url, &["build?delay=0sec"]);
+    let url = concat_urls(&rebase_url(&project.url, server), &["build?delay=0sec"]);
     log::info!("Running build at {url}");
 
     let mut request = client.post(&url);
@@ -641,7 +691,7 @@ pub async fn stop_build(
     project: &Project,
 ) -> Result<()> {
     let credentials = Credentials::from(server);
-    let url = concat_urls(&project.url, &["lastBuild/stop"]);
+    let url = concat_urls(&rebase_url(&project.url, server), &["lastBuild/stop"]);
     log::info!("Stopping build at {url}");
 
     let mut request = client.post(&url);
@@ -707,8 +757,9 @@ pub async fn claim_build(
     cache: &SharedCache,
 ) -> Result<()> {
     let credentials = Credentials::from(server);
+    let project_url = rebase_url(&project.url, server);
     let number = build_number.to_string();
-    let url = concat_urls(&project.url, &[&number, "claim", "claim"]);
+    let url = concat_urls(&project_url, &[&number, "claim", "claim"]);
     log::info!("Claiming build at {url}");
 
     let json = serde_json::json!({
@@ -733,7 +784,7 @@ pub async fn claim_build(
     }
 
     // original: RemoveFromCache(buildUrl) - drop the cached build document.
-    let build_url = concat_urls(&project.url, &[&number]);
+    let build_url = concat_urls(&project_url, &[&number]);
     let details_url = concat_urls(&build_url, &["api/xml", BUILD_DETAILS_FILTER]);
     remove_cache_entry(cache, &details_url);
 
@@ -841,6 +892,98 @@ mod tests {
         assert_eq!(
             BuildStatus::from_jenkins_color("notbuilt", false).value,
             BuildStatusEnum::Unknown
+        );
+    }
+
+    /// URLs taken from Jenkins answers (which use the host from the Jenkins
+    /// URL setting) must be re-rooted at the configured server origin, while
+    /// URLs already on that origin stay untouched.
+    #[test]
+    fn rebases_jenkins_urls_onto_the_configured_origin() {
+        let server = Server {
+            url: "http://jenkins.corp.example:8080/".into(),
+            ..Default::default()
+        };
+
+        // Different origin (short host name from the Jenkins answer).
+        assert_eq!(
+            rebase_url("http://jenkins:8080/job/folder/", &server),
+            "http://jenkins.corp.example:8080/job/folder/"
+        );
+        // Different scheme as well.
+        assert_eq!(
+            rebase_url("http://jenkins:8080/job/j/42/console", &server),
+            "http://jenkins.corp.example:8080/job/j/42/console"
+        );
+        // Same origin: untouched.
+        assert_eq!(
+            rebase_url("http://jenkins.corp.example:8080/job/j/42/", &server),
+            "http://jenkins.corp.example:8080/job/j/42/"
+        );
+        // Origin without a path.
+        assert_eq!(
+            rebase_url("http://jenkins:8080", &server),
+            "http://jenkins.corp.example:8080"
+        );
+        // Relative answer: attached to the configured server.
+        assert_eq!(
+            rebase_url("job/x/", &server),
+            "http://jenkins.corp.example:8080/job/x/"
+        );
+    }
+
+    /// Loads the real project list from the first server configured on this
+    /// machine (run manually: `cargo test live_load_projects -- --ignored
+    /// --nocapture`). Asserts that every returned URL was rebased onto the
+    /// configured origin - the regression that made the settings dialog fail
+    /// with DNS errors for every folder Jenkins named with its short host.
+    #[test]
+    #[ignore = "requires the live Jenkins server from the local configuration"]
+    fn live_load_projects_from_configuration() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let config_service = crate::config::ConfigurationService::new().expect("configuration");
+        let config = config_service.get_config().expect("configuration");
+        let server = config.servers.first().expect("a configured server");
+        let client = build_client(server.ignore_untrusted_certificate).expect("client");
+
+        let projects = runtime
+            .block_on(load_projects(&client, server))
+            .expect("load_projects against the live server");
+
+        assert!(!projects.is_empty(), "expected at least one project");
+        let origin = split_origin(&server.url).expect("server url has an origin").0;
+        for project in &projects {
+            assert!(
+                project.url.starts_with(&format!("{origin}/")),
+                "project url not rebased: {}",
+                project.url
+            );
+        }
+        println!(
+            "loaded {} projects (first: {})",
+            projects.len(),
+            projects[0].url
+        );
+
+        // Poll one project as well: the job document and the build links
+        // inside it must use the configured origin too.
+        let state = runtime
+            .block_on(update_project(
+                &client,
+                server,
+                &projects[0],
+                &new_cache(),
+            ))
+            .expect("update_project against the live server");
+        let details = state.details.as_ref();
+        println!(
+            "polled {}: status {:?}, last build {:?}",
+            projects[0].name,
+            details.map(|d| d.status.value),
+            details.and_then(|d| d.last_build.as_ref().map(|b| b.number))
         );
     }
 }

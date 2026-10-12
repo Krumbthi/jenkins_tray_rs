@@ -1,7 +1,7 @@
 # Codebase Index: jenkins_tray
 
-> Generated: 2026-10-09 13:52:36 UTC | Files: 13 | Lines: 5346
-> Languages: Markdown (3), Rust (9), TOML (1)
+> Generated: 2026-10-12 06:36:14 UTC | Files: 14 | Lines: 5546
+> Languages: Markdown (3), Rust (10), TOML (1)
 
 ## Directory Structure
 
@@ -16,6 +16,7 @@ jenkins_tray/
     config/
       configuration.rs
     config.rs
+    errors.rs
     jenkins_client.rs
     main.rs
     model.rs
@@ -60,12 +61,16 @@ jenkins_tray/
 - `pub mod configuration`
 - `pub struct ConfigurationService`
 
+**src/errors.rs**
+- `pub fn root_cause(error: &anyhow::Error) -> String`
+
 **src/jenkins_client.rs**
 - `pub const BUILD_DETAILS_FILTER: &str = "?tree=number,fullDisplayName,timestamp,estimatedDuration,duration,result,userNodes,culprits[fullName],builtOn,url,actions[assignedBy,claimDate,claimed,claimedBy,reason]"`
 - `pub struct Clients`
 - `pub fn build_client(ignore_untrusted_certificate: bool) -> Result<reqwest::Client>`
 - `pub struct Credentials`
 - `pub fn concat_urls(base: &str, fragments: &[&str]) -> String`
+- `pub fn rebase_url(url: &str, server: &Server) -> String`
 - `pub struct XmlCache`
 - `pub type SharedCache = Arc<Mutex<XmlCache>>`
 - `pub fn new_cache() -> SharedCache`
@@ -146,7 +151,7 @@ jenkins_tray/
 
 ## INDEX.md
 
-**Language:** Markdown | **Size:** 17.6 KB | **Lines:** 614
+**Language:** Markdown | **Size:** 17.9 KB | **Lines:** 633
 
 **Declarations:**
 
@@ -256,9 +261,19 @@ jenkins_tray/
 
 ---
 
+## src/errors.rs
+
+**Language:** Rust | **Size:** 1.1 KB | **Lines:** 31
+
+**Declarations:**
+
+`mod tests`
+
+---
+
 ## src/jenkins_client.rs
 
-**Language:** Rust | **Size:** 31.5 KB | **Lines:** 846
+**Language:** Rust | **Size:** 37.6 KB | **Lines:** 989
 
 **Imports:**
 - `std::collections::{HashMap, HashSet}`
@@ -291,6 +306,8 @@ jenkins_tray/
 
 `async fn upload_string( credentials: &Credentials, request: reqwest::RequestBuilder, ) -> Result<String>`
 
+`fn split_origin(url: &str) -> Option<(&str, &str)>`
+
 `async fn download( client: &reqwest::Client, credentials: &Credentials, url: &str, cache: Option<&SharedCache>, ) -> Result<String>`
 
 `fn element_children<'doc, 'input>(node: Node<'doc, 'input>) -> impl Iterator<Item = Node<'doc, 'input>>`
@@ -319,7 +336,7 @@ jenkins_tray/
 
 ## src/main.rs
 
-**Language:** Rust | **Size:** 66.0 KB | **Lines:** 1672
+**Language:** Rust | **Size:** 66.1 KB | **Lines:** 1677
 
 **Imports:**
 - `std::cell::RefCell`
@@ -337,6 +354,8 @@ jenkins_tray/
 **Declarations:**
 
 `mod config`
+
+`mod errors`
 
 `mod jenkins_client`
 
@@ -504,7 +523,7 @@ jenkins_tray/
 
 ## src/projects_updater.rs
 
-**Language:** Rust | **Size:** 8.4 KB | **Lines:** 240
+**Language:** Rust | **Size:** 8.4 KB | **Lines:** 242
 
 **Imports:**
 - `std::sync::Arc`

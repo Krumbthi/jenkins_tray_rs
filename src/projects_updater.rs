@@ -218,7 +218,9 @@ impl UpdateLoop {
                 Ok((url, Ok(state))) => states.push((url, state)),
                 // original: errors are logged per project and leave the
                 // project's previous details untouched
-                Ok((url, Err(e))) => log::error!("Error updating {url}: {e:#}"),
+                Ok((url, Err(e))) => {
+                    log::error!("Error updating {url}: {}", crate::errors::root_cause(&e))
+                }
                 Err(e) => log::error!("Update task failed: {e}"),
             }
         }

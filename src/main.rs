@@ -33,6 +33,7 @@ use tray::TrayHub;
 slint::include_modules!();
 
 mod config;
+mod errors;
 mod jenkins_client;
 mod model;
 mod notifications;
@@ -589,7 +590,11 @@ fn spawn_project_load(services: &Services, settings: &SettingsWindow, server: &S
                     }
                 }
                 Err(e) => {
-                    log::error!("Error loading projects from {}: {e:#}", server.url);
+                    log::error!(
+                        "Error loading projects from {}: {}",
+                        server.url,
+                        errors::root_cause(&e)
+                    );
                     settings.set_servers_status(
                         format!("Error loading projects from {}", server.url).into(),
                     );

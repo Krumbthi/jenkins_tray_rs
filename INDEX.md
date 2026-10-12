@@ -1,6 +1,6 @@
 # Codebase Index: jenkins_tray
 
-> Generated: 2026-10-12 10:46:16 UTC | Files: 17 | Lines: 7783
+> Generated: 2026-10-12 12:56:46 UTC | Files: 17 | Lines: 7793
 > Languages: Markdown (3), Rust (13), TOML (1)
 
 ## Directory Structure
@@ -194,7 +194,7 @@ jenkins_tray/
 
 ## build.rs
 
-**Language:** Rust | **Size:** 1.2 KB | **Lines:** 27
+**Language:** Rust | **Size:** 2.0 KB | **Lines:** 37
 
 **Declarations:**
 

@@ -23,5 +23,15 @@ fn main() {
         std::fs::write(path, &content).expect("could not write ui/version.slint");
     }
 
-    slint_build::compile("ui/app-window.slint").expect("Slint build failed");
+    // Compile with the "fluent-light" style: the default "fluent" style follows
+    // the OS color scheme at runtime (SlintInternal.color-scheme), so on a dark
+    // Windows theme the std-widgets and all default text colors flip to light-on-dark
+    // while this port's custom content keeps the original WinForms app's hard-coded
+    // light colors (Ui.* backgrounds, row/dialog surfaces) - producing unreadable
+    // white text on light backgrounds. The original app was always light-themed, so
+    // pin the light variant: with a "-light" style suffix the compiler resolves
+    // SlintInternal.color-scheme to a constant `light`, ignoring the OS theme.
+    let style_config = slint_build::CompilerConfiguration::default().with_style("fluent-light".into());
+    slint_build::compile_with_config("ui/app-window.slint", style_config)
+        .expect("Slint build failed");
 }

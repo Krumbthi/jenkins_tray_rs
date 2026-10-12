@@ -9,9 +9,8 @@
 //! The Jenkins client, the update service, the notification buckets and the
 //! tray notifier state are ports of `JenkinsService`, `ProjectsUpdateService`,
 //! `AllServersStatus`/`NotificationService` and `TrayNotifier`; where the Rust
-//! backend is still a stub (application update service, sound playback), the
-//! callback degrades to logging - the original behavior is documented at each
-//! call site.
+//! backend is still a stub (sound playback), the callback degrades to logging
+//! - the original behavior is documented at each call site.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -24,6 +23,7 @@ use anyhow::Result;
 use chrono::{Duration, Local, TimeZone};
 use slint::{CloseRequestResponse, ComponentHandle, ModelRc, VecModel};
 
+use app_update::{ApplicationUpdateService, UpdateSource};
 use config::ConfigurationService;
 use model::{BuildCauseEnum, BuildDetails, BuildStatusEnum, Configuration, Project, Server};
 use notifications::NotificationService;
@@ -32,6 +32,7 @@ use tray::TrayHub;
 
 slint::include_modules!();
 
+mod app_update;
 mod config;
 mod errors;
 mod jenkins_client;
@@ -50,6 +51,40 @@ struct EditServerContext {
     index: Option<usize>,
 }
 
+/// Sortable column of the main grid (original: the grid columns with an
+/// explicit `SortMode`: name and details sort by display text, the three
+/// build date columns use the custom date comparer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortKey {
+    Name,
+    Details,
+    LastBuild,
+    LastSuccess,
+    LastFailure,
+}
+
+/// The active column sort. `None` reproduces the original's initial grid
+/// state (`SortInfo`: server ascending, then project name ascending); the
+/// column headers cycle ascending -> descending -> unsorted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GridSort {
+    key: SortKey,
+    ascending: bool,
+}
+
+/// The sort state after clicking the header of `key`'s column: first click
+/// sorts ascending, the second descending, the third removes the sort
+/// (original: DevExpress column header click cycle).
+fn next_sort(current: Option<GridSort>, key: SortKey) -> Option<GridSort> {
+    match current {
+        Some(active) if active.key == key && active.ascending => {
+            Some(GridSort { key, ascending: false })
+        }
+        Some(active) if active.key == key => None,
+        _ => Some(GridSort { key, ascending: true }),
+    }
+}
+
 /// State shared between the Slint callbacks.
 #[derive(Default)]
 struct AppState {
@@ -57,6 +92,8 @@ struct AppState {
     /// `Some((server_url, project_url))` for project rows. Used to resolve the
     /// selected row when a context menu action fires.
     row_keys: Vec<Option<(String, String)>>,
+    /// Active grid sort (original: the DevExpress column SortInfo).
+    sort: Option<GridSort>,
     /// Projects available to the settings checkbox list, keyed by server URL.
     /// Filled with a live Jenkins job list (original:
     /// `ProjectListControl.UpdateProjectList` -> `JenkinsService.LoadProjects`)
@@ -82,6 +119,8 @@ struct Services {
     state: Arc<Mutex<AppState>>,
     /// Tray backend + notifier state (original: `TrayNotifier.Instance`).
     tray: Arc<Mutex<TrayHub>>,
+    /// Application update service (original: `ApplicationUpdateService`).
+    app_update: Arc<ApplicationUpdateService>,
     /// Handle used to spawn the Jenkins HTTP calls on the tokio runtime.
     runtime: tokio::runtime::Handle,
 }
@@ -356,6 +395,79 @@ fn format_build_details(build: Option<&BuildDetails>) -> String {
     format_build(build.number, Some(build.time))
 }
 
+/// The "Project" cell text (original: `ProjectWrapper.Name` - the display
+/// name is used when the setting is enabled, falling back to the project name
+/// when it is empty).
+fn display_name(project: &Project, show_display_name: bool) -> String {
+    let display_name = project
+        .display_name
+        .as_deref()
+        .filter(|name| !name.is_empty());
+    match (show_display_name, display_name) {
+        (true, Some(display)) => display.to_string(),
+        _ => project.name.clone(),
+    }
+}
+
+/// Row hover tooltip (original: `MainForm.projectsGridView_MouseMove`): the
+/// `BuildStatus_*` resource for the project's status plus the "in queue since"
+/// suffix while a stuck build is queued. Empty means no tooltip (the original
+/// passes a null resource string to `SetToolTip`).
+fn status_tooltip(project: &Project) -> String {
+    let status = project.status();
+    let mut message = status_resource(&status.resource_key())
+        .unwrap_or_default()
+        .to_string();
+
+    // original: if (Status.IsStuck && Queue.InQueue) message +=
+    // string.Format(BuildDetails_InQueue_Since, Queue.InQueueSince)
+    if status.is_stuck {
+        let queued_since = project
+            .queue
+            .as_ref()
+            .filter(|queue| queue.in_queue)
+            .and_then(|queue| queue.in_queue_since);
+        if let Some(since) = queued_since.and_then(|millis| Local.timestamp_millis_opt(millis).single())
+        {
+            // original: DateTime default representation ("10/12/2026 11:47:41 AM")
+            message.push_str(&format!(
+                " In queue since {}.",
+                since.format("%m/%d/%Y %-I:%M:%S %p")
+            ));
+        }
+    }
+    message
+}
+
+/// The `BuildStatus_*` strings from `JenkinsTrayResources.resx`; `None` when
+/// the original resource manager has no entry for the key (e.g. a combined
+/// in-progress + stuck state), in which case the original shows no tooltip.
+fn status_resource(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "BuildStatus_Aborted" => "Build was aborted",
+        "BuildStatus_Aborted_Stuck" => "Build was aborted. Build is stuck.",
+        "BuildStatus_Disabled" => "Project disabled",
+        "BuildStatus_Disabled_BuildInProgress" => "Project disabled. Build in progress.",
+        "BuildStatus_Disabled_Stuck" => "Project disabled. Build is stuck.",
+        "BuildStatus_Failed" => "Build failed",
+        "BuildStatus_Failed_BuildInProgress" => "Last build failed. Build in progress.",
+        "BuildStatus_Failed_Stuck" => "Last build failed. Build is stuck.",
+        "BuildStatus_Indeterminate" => "Indeterminate: no build done.",
+        "BuildStatus_Indeterminate_BuildInProgress" => {
+            "Indeterminate: no build done. Build in progress."
+        }
+        "BuildStatus_Indeterminate_Stuck" => "Indeterminate: no build done. Build is stuck.",
+        "BuildStatus_Successful" => "Successful",
+        "BuildStatus_Successful_BuildInProgress" => "Successful. Build in progress.",
+        "BuildStatus_Successful_Stuck" => "Successful. Build is stuck.",
+        "BuildStatus_Unknown" => "Unknown status",
+        "BuildStatus_Unstable" => "Unstable: some tests failed.",
+        "BuildStatus_Unstable_BuildInProgress" => "Unstable: some tests failed. Build in progress.",
+        "BuildStatus_Unstable_Stuck" => "Unstable: some tests failed. Build is stuck.",
+        _ => return None,
+    })
+}
+
 /// Builds one grid row for a project (original: ProjectWrapper properties).
 fn project_row(project: &Project, server: &Server, show_display_name: bool) -> ProjectRow {
     let details = project.all_build_details.as_ref();
@@ -369,16 +481,7 @@ fn project_row(project: &Project, server: &Server, show_display_name: bool) -> P
         .map(|queue| queue.in_queue)
         .unwrap_or(false);
 
-    // original: ProjectWrapper.Name - the display name is used when the
-    // setting is enabled, falling back to the project name when it is empty.
-    let display_name = project
-        .display_name
-        .as_deref()
-        .filter(|name| !name.is_empty());
-    let name = match (show_display_name, display_name) {
-        (true, Some(display)) => display.to_string(),
-        _ => project.name.clone(),
-    };
+    let name = display_name(project, show_display_name);
 
     let last_build = format_build_details(details.and_then(|d| d.last_build.as_ref()));
     let last_success_build = details.and_then(|d| d.last_successful_build.as_ref());
@@ -410,6 +513,7 @@ fn project_row(project: &Project, server: &Server, show_display_name: bool) -> P
         in_progress,
         stuck,
         queued,
+        status_tooltip: status_tooltip(project).into(),
         // original: projectStatus.IsStuck || Value >= BuildStatusEnum.Indeterminate
         ack_status_eligible: stuck || value >= BuildStatusEnum::Indeterminate,
         // original: project.LastFailedBuild != null
@@ -419,13 +523,31 @@ fn project_row(project: &Project, server: &Server, show_display_name: bool) -> P
 }
 
 /// Builds the main grid: one group header per server followed by its projects
-/// sorted by name (original: projectsGridControl rows).
-fn build_rows(config: &Configuration) -> (Vec<ProjectRow>, Vec<Option<(String, String)>>) {
+/// (original: `projectsGridControl` rows).
+///
+/// Servers are always ordered by display text and projects by the active
+/// column sort; with no sort (`sort == None`) the original's initial
+/// `SortInfo` applies (server ascending, then project name ascending).
+/// Documented deviation: the original sorts a flat row list, so sorting by a
+/// project column dissolves the server grouping - the port keeps the group
+/// headers and sorts the projects within each group instead.
+fn build_rows(
+    config: &Configuration,
+    sort: Option<GridSort>,
+) -> (Vec<ProjectRow>, Vec<Option<(String, String)>>) {
     let show_display_name = config.general_settings.show_project_display_name;
     let mut rows = Vec::new();
     let mut keys: Vec<Option<(String, String)>> = Vec::new();
 
-    for server in &config.servers {
+    // original: initial SortInfo = serverGridColumn ascending
+    let mut servers: Vec<&Server> = config.servers.iter().collect();
+    servers.sort_by(|a, b| {
+        server_display_text(a)
+            .to_lowercase()
+            .cmp(&server_display_text(b).to_lowercase())
+    });
+
+    for server in servers {
         rows.push(ProjectRow {
             server: server_display_text(server).into(),
             is_header: true,
@@ -434,7 +556,21 @@ fn build_rows(config: &Configuration) -> (Vec<ProjectRow>, Vec<Option<(String, S
         keys.push(None);
 
         let mut projects: Vec<&Project> = server.projects.iter().collect();
-        projects.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        match sort {
+            // original: nameGridColumn ascending (sorted by display text,
+            // matching ColumnSortMode.DisplayText)
+            None => projects.sort_by(|a, b| {
+                display_name(a, show_display_name)
+                    .to_lowercase()
+                    .cmp(&display_name(b, show_display_name).to_lowercase())
+            }),
+            Some(sort) => {
+                projects.sort_by(|a, b| {
+                    let order = compare_projects(a, b, sort.key, show_display_name);
+                    if sort.ascending { order } else { order.reverse() }
+                });
+            }
+        }
 
         for project in projects {
             rows.push(project_row(project, server, show_display_name));
@@ -443,6 +579,51 @@ fn build_rows(config: &Configuration) -> (Vec<ProjectRow>, Vec<Option<(String, S
     }
 
     (rows, keys)
+}
+
+/// Compares two projects by a sortable column (original: the grid's
+/// `SortMode` handlers - DisplayText comparison for name/details, the build
+/// date for the three date columns with null dates first, see
+/// `MainForm.DoCustomColumnSort`).
+fn compare_projects(
+    a: &Project,
+    b: &Project,
+    key: SortKey,
+    show_display_name: bool,
+) -> std::cmp::Ordering {
+    let time_of = |build: Option<&BuildDetails>| build.map(|build| build.time);
+    match key {
+        SortKey::Name => display_name(a, show_display_name)
+            .to_lowercase()
+            .cmp(&display_name(b, show_display_name).to_lowercase()),
+        SortKey::Details => format_details(a).to_lowercase().cmp(&format_details(b).to_lowercase()),
+        SortKey::LastBuild => time_of(
+            a.all_build_details.as_ref().and_then(|d| d.last_build.as_ref()),
+        )
+        .cmp(&time_of(
+            b.all_build_details.as_ref().and_then(|d| d.last_build.as_ref()),
+        )),
+        SortKey::LastSuccess => time_of(
+            a.all_build_details
+                .as_ref()
+                .and_then(|d| d.last_successful_build.as_ref()),
+        )
+        .cmp(&time_of(
+            b.all_build_details
+                .as_ref()
+                .and_then(|d| d.last_successful_build.as_ref()),
+        )),
+        SortKey::LastFailure => time_of(
+            a.all_build_details
+                .as_ref()
+                .and_then(|d| d.last_failed_build.as_ref()),
+        )
+        .cmp(&time_of(
+            b.all_build_details
+                .as_ref()
+                .and_then(|d| d.last_failed_build.as_ref()),
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -457,7 +638,8 @@ fn refresh_rows(
     state: &Arc<Mutex<AppState>>,
 ) -> Result<()> {
     let config = config_service.get_config()?;
-    let (rows, keys) = build_rows(&config);
+    let sort = lock_state(state).sort;
+    let (rows, keys) = build_rows(&config, sort);
     lock_state(state).row_keys = keys;
     ui.set_rows(ModelRc::new(VecModel::from(rows)));
     ui.set_integrate_claim(config.general_settings.integrate_with_claim_plugin);
@@ -706,12 +888,29 @@ fn open_url(url: &str) {
     }
 }
 
+/// Action to run when the message box's "Yes" button is pressed (original:
+/// `ApplicationUpdateHandler`'s Yes branch: open the installer page and exit).
+/// OK-only boxes never register one.
+static MESSAGE_BOX_YES_ACTION: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None);
+
+/// Takes (and clears) the pending "Yes" action, if any.
+fn take_message_box_yes_action() -> Option<Box<dyn Fn() + Send>> {
+    MESSAGE_BOX_YES_ACTION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+}
+
 /// Shows the generic message box, callable from any thread
 /// (original: `XtraMessageBox.Show(message, caption, MessageBoxButtons.OK)`
 /// and `MessageBox.Show(message, caption, OK, Error)`).
 ///
 /// Documented deviation: the original dialogs are modal, this one is not.
+///
+/// Clears any stale "Yes" action: an OK box can never run the pending action
+/// of an earlier Yes/No box.
 fn show_message_box(message_box: &slint::Weak<MessageBoxWindow>, caption: &str, message: &str) {
+    drop(take_message_box_yes_action());
     let message_box = message_box.clone();
     let caption = caption.to_string();
     let message = message.to_string();
@@ -722,6 +921,36 @@ fn show_message_box(message_box: &slint::Weak<MessageBoxWindow>, caption: &str, 
         message_box.set_caption(caption.into());
         message_box.set_message(message.into());
         message_box.set_yes_no(false);
+        if let Err(e) = message_box.show() {
+            log::error!("Could not show the message box: {e}");
+        }
+    }) {
+        log::error!("Could not schedule the message box: {e}");
+    }
+}
+
+/// Shows a Yes/No message box; `on_yes` runs when the user presses "Yes"
+/// (original: XtraMessageBox with MessageBoxButtons.YesNo - used by the
+/// `ApplicationUpdateHandler` prompt).
+fn show_yes_no_message_box(
+    message_box: &slint::Weak<MessageBoxWindow>,
+    caption: &str,
+    message: &str,
+    on_yes: Box<dyn Fn() + Send>,
+) {
+    *MESSAGE_BOX_YES_ACTION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(on_yes);
+    let message_box = message_box.clone();
+    let caption = caption.to_string();
+    let message = message.to_string();
+    if let Err(e) = slint::invoke_from_event_loop(move || {
+        let Some(message_box) = message_box.upgrade() else {
+            return;
+        };
+        message_box.set_caption(caption.into());
+        message_box.set_message(message.into());
+        message_box.set_yes_no(true);
         if let Err(e) = message_box.show() {
             log::error!("Could not show the message box: {e}");
         }
@@ -768,14 +997,70 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
     });
 
     // Toolbar "Check for updates" - the original runs
-    // ApplicationUpdateService.CheckForUpdates_Synchronous and shows a message
-    // box; there is no update service in the Rust port yet.
+    // ApplicationUpdateService.CheckForUpdates_Synchronous(User): an update
+    // raises the Yes/No download prompt, no update shows
+    // ApplicationUpdates_NoUpdate_Text, errors show ErrorBoxCaption /
+    // ErrorBoxMessage. Documented deviation: the port performs the request on
+    // the tokio runtime (the original blocks the UI thread) and posts the
+    // message boxes back to the UI thread.
     ui.on_check_for_updates({
-        let ui = ui.as_weak();
+        let services = services.clone();
+        let message_box = windows.message_box.as_weak();
         move || {
-            log::warn!("Update checking is not available yet");
-            ui.unwrap()
-                .set_status_text("Update check is not available yet.".into());
+            let app_update = services.app_update.clone();
+            let message_box = message_box.clone();
+            services.runtime.spawn(async move {
+                match app_update.check(UpdateSource::User).await {
+                    // An update was found: the NewVersionAvailable handler
+                    // already showed the download prompt.
+                    Ok(true) => {}
+                    // original: XtraMessageBox.Show(ApplicationUpdates_NoUpdate_Text,
+                    // ApplicationUpdates_Caption, OK, Information)
+                    Ok(false) => show_message_box(
+                        &message_box,
+                        "Jenkins Tray updates",
+                        "No update available.",
+                    ),
+                    // original: ErrorBoxCaption / ErrorBoxMessage with the
+                    // exception message.
+                    Err(e) => show_message_box(
+                        &message_box,
+                        "An error occurred",
+                        &format!("The following error occurred:\n\nMessage: {e}"),
+                    ),
+                }
+            });
+        }
+    });
+
+    // Column header click - sort the grid (original: DevExpress column
+    // header clicks cycle ascending -> descending -> unsorted for that
+    // column).
+    ui.on_sort_changed({
+        let services = services.clone();
+        let ui = ui.as_weak();
+        move |column: i32| {
+            let key = match column {
+                1 => SortKey::Name,
+                2 => SortKey::Details,
+                3 => SortKey::LastBuild,
+                4 => SortKey::LastSuccess,
+                5 => SortKey::LastFailure,
+                _ => return, // not a sortable column
+            };
+            let sort = {
+                let mut state = lock_state(&services.state);
+                let next = next_sort(state.sort, key);
+                state.sort = next;
+                next
+            };
+            if let Some(ui) = ui.upgrade() {
+                ui.set_sort_column(sort.map_or(-1, |_| column));
+                ui.set_sort_ascending(sort.map_or(true, |sort| sort.ascending));
+                if let Err(e) = refresh_rows(&ui, &services.config, &services.state) {
+                    log::error!("Could not refresh the projects grid: {e}");
+                }
+            }
         }
     });
 
@@ -1393,11 +1678,15 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
             general.integrate_with_claim_plugin = settings.get_integrate_with_claim_plugin();
             general.show_project_display_name = settings.get_show_project_display_name();
             general.check_for_updates = settings.get_check_for_updates();
+            let check_for_updates = general.check_for_updates;
 
             if let Err(e) = services.config.set_general_settings(general) {
                 log::error!("Could not save the general settings: {e}");
                 return;
             }
+            // original: SettingsForm OK -> ApplicationUpdateService.
+            // EnableTimer(checked)
+            services.app_update.clone().enable_timer(check_for_updates);
             // original: ConfigurationUpdated -> MainForm refreshes the grid
             // (display names), the claim plugin columns, the notification
             // service and the tray notifier.
@@ -1614,6 +1903,11 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
     {
         let message_box = windows.message_box.as_weak();
         windows.message_box.on_accepted(move || {
+            // A registered action means this is the update prompt's "Yes"
+            // (original: ApplicationUpdateHandler accepts the new version).
+            if let Some(action) = take_message_box_yes_action() {
+                action();
+            }
             if let Err(e) = message_box.unwrap().hide() {
                 log::error!("Could not close the message box: {e}");
             }
@@ -1623,6 +1917,9 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
     {
         let message_box = windows.message_box.as_weak();
         windows.message_box.on_declined(move || {
+            if take_message_box_yes_action().is_some() {
+                log::info!("Update refused by user");
+            }
             if let Err(e) = message_box.unwrap().hide() {
                 log::error!("Could not close the message box: {e}");
             }
@@ -1726,19 +2023,12 @@ fn main() -> Result<()> {
 
     let clients = jenkins_client::Clients::new()?;
 
-    let general_settings = config_service.get_general_settings()?;
     let updater = ProjectsUpdateService::new(
         UpdaterConfig::default(),
         clients.clone(),
         config_service.clone(),
     );
     let updater = Rc::new(RefCell::new(updater));
-
-    // original: ApplicationUpdateService check at startup when enabled -
-    // there is no update service in the Rust port yet.
-    if general_settings.check_for_updates {
-        log::info!("Startup update check is not available yet");
-    }
 
     // --- Windows (created once and reused, like the original forms) ---
 
@@ -1755,6 +2045,36 @@ fn main() -> Result<()> {
         .about
         .set_version(format!("Version {}", env!("CARGO_PKG_VERSION")).into());
 
+    // Application update service (original: the Spring-managed
+    // ApplicationUpdateService + ApplicationUpdateHandler singletons).
+    let app_update = ApplicationUpdateService::new(runtime.handle().clone(), config_service.clone());
+    app_update.on_new_version(Arc::new({
+        let message_box = windows.message_box.as_weak();
+        move |version: &str, installer_url: &str| {
+            // original: ApplicationUpdateHandler.applicationUpdateService_
+            // NewVersionAvailable -> Yes/No box; Yes opens the installer page
+            // and exits the application.
+            let message = format!(
+                "A new version is available: v{version}.\n\n\
+                 Do you want to download the update now (the application will close) ?"
+            );
+            let installer_url = installer_url.to_string();
+            show_yes_no_message_box(
+                &message_box,
+                "Jenkins Tray updates",
+                &message,
+                Box::new(move || {
+                    log::info!("Update accepted by user");
+                    open_url(&installer_url);
+                    // original: Application.Exit()
+                    if let Err(e) = slint::quit_event_loop() {
+                        log::error!("Could not quit the event loop: {e}");
+                    }
+                }),
+            );
+        }
+    }));
+
     let services = Services {
         config: config_service,
         notifications: notification_service,
@@ -1762,8 +2082,13 @@ fn main() -> Result<()> {
         updater,
         state: Arc::new(Mutex::new(AppState::default())),
         tray: tray_hub,
+        app_update,
         runtime: runtime.handle().clone(),
     };
+
+    // original: ApplicationUpdateService.Initialize -> EnableTimer(config) -
+    // the first check runs 5 seconds after start-up, then hourly.
+    services.app_update.clone().initialize();
 
     // Initial grid fill (original: MainForm constructor -> LoadProjects).
     refresh_rows(&ui, &services.config, &services.state)?;
@@ -1872,4 +2197,30 @@ fn main() -> Result<()> {
     run_result?;
     log::info!("Jenkins Tray stopped");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sort_header_clicks_cycle_ascending_descending_unsorted() {
+        // first click: ascending (matches the initial SortInfo direction)
+        let asc = next_sort(None, SortKey::LastFailure);
+        assert_eq!(asc, Some(GridSort { key: SortKey::LastFailure, ascending: true }));
+        // second click: descending
+        let desc = next_sort(asc, SortKey::LastFailure);
+        assert_eq!(desc, Some(GridSort { key: SortKey::LastFailure, ascending: false }));
+        // third click: no sort at all
+        assert_eq!(next_sort(desc, SortKey::LastFailure), None);
+    }
+
+    #[test]
+    fn clicking_another_column_sorts_it_ascending() {
+        let other = next_sort(
+            Some(GridSort { key: SortKey::Name, ascending: false }),
+            SortKey::Details,
+        );
+        assert_eq!(other, Some(GridSort { key: SortKey::Details, ascending: true }));
+    }
 }

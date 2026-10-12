@@ -26,6 +26,9 @@ export struct ProjectRow {
     in-progress: bool,
     stuck: bool,
     queued: bool,
+    // Hover tooltip: the original's BuildStatus_* resource string with the
+    // in-queue suffix ("" = no tooltip).
+    status-tooltip: string,
     // True when the "Acknowledge status" menu item is available
     // (original: projectStatus.IsStuck || Value >= Indeterminate).
     ack-status-eligible: bool,
@@ -133,9 +136,53 @@ component CellText inherits Rectangle {
     }
 }
 
+/// One clickable column header (original: DevExpress column header; clicking
+/// sorts the column and shows a ▲/▼ sort glyph).
+component HeaderCell inherits Rectangle {
+    in property <string> caption;
+    in property <string> glyph;
+    in property <length> cell-width;
+    in property <bool> align-right: false;
+    in property <bool> bold: false;
+    callback clicked();
+
+    width: cell-width;
+
+    Text {
+        x: 6px;
+        y: 0;
+        width: parent.width - 12px;
+        height: parent.height;
+        text: root.caption + root.glyph;
+        font-weight: root.bold ? 700 : 400;
+        horizontal-alignment: root.align-right ? right : left;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => { root.clicked(); }
+    }
+}
+
 /// Column header row of the main grid (original: grid column captions).
 export component TableHeader inherits Rectangle {
     in property <bool> show-claim-columns: false;
+    // Active column sort, mirrored from Rust (original: the DevExpress sort
+    // glyph). -1 = no sort.
+    in property <int> sort-column: -1;
+    in property <bool> sort-ascending: true;
+    // column: 1 Project, 2 Details, 3 Last build, 4 Last success,
+    // 5 Last failure (matching the original's SortMode configuration).
+    callback column-clicked(column: int);
+
+    pure function glyph(column: int) -> string {
+        root.sort-column == column
+            ? (root.sort-ascending ? " ▲" : " ▼")
+            : ""
+    }
 
     height: 24px;
     background: Ui.bar-bg;
@@ -144,11 +191,40 @@ export component TableHeader inherits Rectangle {
 
     HorizontalLayout {
         CellText { cell-text: ""; cell-width: Ui.col-status; }
-        CellText { cell-text: "Project"; cell-width: Ui.col-project; bold: true; }
-        CellText { cell-text: "Details"; cell-width: Ui.col-details; }
-        CellText { cell-text: "Last build"; cell-width: Ui.col-build; align-right: true; }
-        CellText { cell-text: "Last success"; cell-width: Ui.col-build; align-right: true; }
-        CellText { cell-text: "Last failure"; cell-width: Ui.col-build; align-right: true; }
+        HeaderCell {
+            caption: "Project";
+            glyph: root.glyph(1);
+            cell-width: Ui.col-project;
+            bold: true;
+            clicked => { root.column-clicked(1); }
+        }
+        HeaderCell {
+            caption: "Details";
+            glyph: root.glyph(2);
+            cell-width: Ui.col-details;
+            clicked => { root.column-clicked(2); }
+        }
+        HeaderCell {
+            caption: "Last build";
+            glyph: root.glyph(3);
+            cell-width: Ui.col-build;
+            align-right: true;
+            clicked => { root.column-clicked(3); }
+        }
+        HeaderCell {
+            caption: "Last success";
+            glyph: root.glyph(4);
+            cell-width: Ui.col-build;
+            align-right: true;
+            clicked => { root.column-clicked(4); }
+        }
+        HeaderCell {
+            caption: "Last failure";
+            glyph: root.glyph(5);
+            cell-width: Ui.col-build;
+            align-right: true;
+            clicked => { root.column-clicked(5); }
+        }
         CellText { cell-text: "Last failure user"; cell-width: Ui.col-user; }
         if (root.show-claim-columns) : CellText { cell-text: "Claimed by"; cell-width: Ui.col-claimed; }
         if (root.show-claim-columns) : CellText { cell-text: "Claim reason"; cell-width: Ui.col-reason; }
@@ -218,5 +294,14 @@ export component ProjectRowView inherits Rectangle {
         height: parent.height;
         clicked => { root.clicked(); }
         double-clicked => { root.double-clicked(); }
+    }
+
+    // Row tooltip (original: MainForm.projectsGridView_MouseMove shows the
+    // BuildStatus_* message while any cell of a row is hovered). Empty text
+    // renders no tooltip at all. Must be the last child: TouchArea accepts
+    // move events, which aborts the front-to-back input traversal for every
+    // item behind it, while the tooltip area only observes and forwards.
+    if (!project-row.is-header && project-row.status-tooltip != "") : Tooltip {
+        text: @markdown("\{project-row.status-tooltip}");
     }
 }

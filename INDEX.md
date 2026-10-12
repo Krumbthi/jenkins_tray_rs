@@ -1,7 +1,7 @@
 # Codebase Index: jenkins_tray
 
-> Generated: 2026-10-12 09:48:41 UTC | Files: 16 | Lines: 6914
-> Languages: Markdown (3), Rust (12), TOML (1)
+> Generated: 2026-10-12 10:46:16 UTC | Files: 17 | Lines: 7783
+> Languages: Markdown (3), Rust (13), TOML (1)
 
 ## Directory Structure
 
@@ -13,6 +13,7 @@ jenkins_tray/
   README.md
   build.rs
   src/
+    app_update.rs
     config/
       configuration.rs
     config.rs
@@ -53,6 +54,10 @@ jenkins_tray/
 
 **README.md**
 - `# Slint Rust Template`
+
+**src/app_update.rs**
+- `pub enum UpdateSource`
+- `pub struct ApplicationUpdateService`
 
 **src/config/configuration.rs**
 - `pub const CONFIGURATION_FILE: &str = "jenkins_tray.json"`
@@ -144,7 +149,7 @@ jenkins_tray/
 
 ## Cargo.toml
 
-**Language:** TOML | **Size:** 1.6 KB | **Lines:** 48
+**Language:** TOML | **Size:** 1.7 KB | **Lines:** 50
 
 **Imports:**
 - `slint`
@@ -165,7 +170,7 @@ jenkins_tray/
 
 ## INDEX.md
 
-**Language:** Markdown | **Size:** 23.6 KB | **Lines:** 844
+**Language:** Markdown | **Size:** 26.3 KB | **Lines:** 939
 
 **Declarations:**
 
@@ -189,11 +194,73 @@ jenkins_tray/
 
 ## build.rs
 
-**Language:** Rust | **Size:** 91 B | **Lines:** 3
+**Language:** Rust | **Size:** 1.2 KB | **Lines:** 27
 
 **Declarations:**
 
 `fn main()`
+
+---
+
+## src/app_update.rs
+
+**Language:** Rust | **Size:** 14.6 KB | **Lines:** 374
+
+**Imports:**
+- `std::collections::HashMap`
+- `std::sync::atomic::{AtomicBool, AtomicU64, Ordering}`
+- `std::sync::{Arc, RwLock}`
+- `std::time::Duration`
+- `anyhow::{bail, Context, Result}`
+- `crate::config::ConfigurationService`
+
+**Declarations:**
+
+`const URL: &str = "https://raw.githubusercontent.com/zionyx/jenkins-tray/master/scripts/version.properties"`
+
+`const UPDATE_DELAY: Duration = Duration::from_secs(5)`
+
+`const UPDATE_PERIOD: Duration = Duration::from_secs(60 * 60)`
+
+`const PROPERTY_VERSION_NUMBER: &str = "version.number"`
+
+`const PROPERTY_INSTALLER_URL: &str = "version.installerUrl"`
+
+**`impl std::fmt::Display for UpdateSource`**
+  `fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result`
+
+
+`struct Version(u32, u32, u32, u32)`
+
+**`impl Version`**
+  `fn parse(text: &str) -> Result<Self>`
+
+
+**`impl std::fmt::Display for Version`**
+  `fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result`
+
+
+**`impl ApplicationUpdateService`**
+  `pub fn new(runtime: tokio::runtime::Handle, config: Arc<ConfigurationService>) -> Arc<Self>`
+
+  `pub fn on_new_version(&self, handler: Arc<dyn Fn(&str, &str) + Send + Sync>)`
+
+  `pub fn initialize(self: Arc<Self>)`
+
+  `pub fn enable_timer(self: Arc<Self>, enable: bool)`
+
+  `fn stop_timer(&self)`
+
+  `pub async fn check(&self, source: UpdateSource) -> Result<bool>`
+
+  `async fn check_internal(&self) -> Result<bool>`
+
+
+`fn current_version() -> Version`
+
+`fn read_properties(text: &str) -> HashMap<String, String>`
+
+`mod tests`
 
 ---
 
@@ -350,7 +417,7 @@ jenkins_tray/
 
 ## src/main.rs
 
-**Language:** Rust | **Size:** 74.5 KB | **Lines:** 1875
+**Language:** Rust | **Size:** 88.8 KB | **Lines:** 2226
 
 **Imports:**
 - `std::cell::RefCell`
@@ -360,12 +427,14 @@ jenkins_tray/
 - `anyhow::Result`
 - `chrono::{Duration, Local, TimeZone}`
 - `slint::{CloseRequestResponse, ComponentHandle, ModelRc, VecModel}`
+- `app_update::{ApplicationUpdateService, UpdateSource}`
 - `config::ConfigurationService`
 - `model::{BuildCauseEnum, BuildDetails, BuildStatusEnum, Configuration, Project, Server}`
-- `notifications::NotificationService`
-- *... and 2 more imports*
+- *... and 3 more imports*
 
 **Declarations:**
+
+`mod app_update`
 
 `mod config`
 
@@ -384,11 +453,19 @@ jenkins_tray/
 `struct EditServerContext`
 > Fields: `index: Option<usize>`
 
+`enum SortKey`
+> Variants: `Name`, `Details`, `LastBuild`, `LastSuccess`, `LastFailure`
+
+`struct GridSort`
+> Fields: `key: SortKey`, `ascending: bool`
+
+`fn next_sort(current: Option<GridSort>, key: SortKey) -> Option<GridSort>`
+
 `struct AppState`
-> Fields: `row_keys: Vec<Option<(String, String)>>`, `settings_projects: HashMap<String, Vec<Project>>`, `edit_server: EditServerContext`, `auth_token_target: Option<(String, String)>`, `claim_target: Option<(String, String, u32)>`
+> Fields: `row_keys: Vec<Option<(String, String)>>`, `sort: Option<GridSort>`, `settings_projects: HashMap<String, Vec<Project>>`, `edit_server: EditServerContext`, `auth_token_target: Option<(String, String)>`, `claim_target: Option<(String, String, u32)>`
 
 `struct Services`
-> Fields: `config: Arc<ConfigurationService>`, `notifications: Arc<NotificationService>`, `clients: jenkins_client::Clients`, `updater: Rc<RefCell<ProjectsUpdateService>>`, `state: Arc<Mutex<AppState>>`, `tray: Arc<Mutex<TrayHub>>`, `runtime: tokio::runtime::Handle`
+> Fields: `config: Arc<ConfigurationService>`, `notifications: Arc<NotificationService>`, `clients: jenkins_client::Clients`, `updater: Rc<RefCell<ProjectsUpdateService>>`, `state: Arc<Mutex<AppState>>`, `tray: Arc<Mutex<TrayHub>>`, `app_update: Arc<ApplicationUpdateService>`, `runtime: tokio::runtime::Handle`
 
 `fn lock_state(state: &Arc<Mutex<AppState>>) -> MutexGuard<'_, AppState>`
 
@@ -417,9 +494,17 @@ jenkins_tray/
 
 `fn format_build_details(build: Option<&BuildDetails>) -> String`
 
+`fn display_name(project: &Project, show_display_name: bool) -> String`
+
+`fn status_tooltip(project: &Project) -> String`
+
+`fn status_resource(key: &str) -> Option<&'static str>`
+
 `fn project_row(project: &Project, server: &Server, show_display_name: bool) -> ProjectRow`
 
-`fn build_rows(config: &Configuration) -> (Vec<ProjectRow>, Vec<Option<(String, String)>>)`
+`fn build_rows( config: &Configuration, sort: Option<GridSort>, ) -> (Vec<ProjectRow>, Vec<Option<(String, String)>>)`
+
+`fn compare_projects( a: &Project, b: &Project, key: SortKey, show_display_name: bool, ) -> std::cmp::Ordering`
 
 `fn refresh_rows( ui: &AppWindow, config_service: &ConfigurationService, state: &Arc<Mutex<AppState>>, ) -> Result<()>`
 
@@ -441,7 +526,13 @@ jenkins_tray/
 
 `fn open_url(url: &str)`
 
+`static MESSAGE_BOX_YES_ACTION: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None)`
+
+`fn take_message_box_yes_action() -> Option<Box<dyn Fn() + Send>>`
+
 `fn show_message_box(message_box: &slint::Weak<MessageBoxWindow>, caption: &str, message: &str)`
+
+`fn show_yes_no_message_box( message_box: &slint::Weak<MessageBoxWindow>, caption: &str, message: &str, on_yes: Box<dyn Fn() + Send>, )`
 
 `fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows)`
 
@@ -451,11 +542,13 @@ jenkins_tray/
 
 `fn main() -> Result<()>`
 
+`mod tests`
+
 ---
 
 ## src/model.rs
 
-**Language:** Rust | **Size:** 16.6 KB | **Lines:** 436
+**Language:** Rust | **Size:** 17.5 KB | **Lines:** 459
 
 **Imports:**
 - `serde::{Deserialize, Serialize}`
@@ -472,6 +565,8 @@ jenkins_tray/
 
 **`impl BuildStatus`**
   `pub fn unknown() -> Self`
+
+  `pub fn resource_key(&self) -> String`
 
   `pub fn from_jenkins_color(color: &str, stuck: bool) -> Self`
 

@@ -1,6 +1,8 @@
 [package]
 name = "jenkins_tray"
-version = "0.1.0"
+# Matches the original application's FileVersion (1.0.5.0) so the update feed
+# comparison and the window title behave exactly like the C# original.
+version = "1.0.5"
 edition = "2024"
 authors = ["Jenkins Tray Rust Team"]
 description = "A Rust + Slint application"

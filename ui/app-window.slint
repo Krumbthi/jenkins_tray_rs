@@ -7,6 +7,7 @@
 
 import { Button, ListView } from "std-widgets.slint";
 import { ProjectRow, Ui, TableHeader, ProjectRowView } from "common.slint";
+import { AppVersion } from "version.slint";
 import { SettingsWindow } from "settings.slint";
 import { EditServerWindow } from "edit-server.slint";
 import { AboutWindow } from "about.slint";
@@ -15,7 +16,9 @@ import { AuthTokenWindow, ClaimBuildWindow, MessageBoxWindow } from "dialogs.sli
 export { SettingsWindow, EditServerWindow, AboutWindow, AuthTokenWindow, ClaimBuildWindow, MessageBoxWindow }
 
 export component AppWindow inherits Window {
-    title: "Jenkins Tray";
+    // original: string.Format("{0} v{1}.{2}.{3}", ProductName, FileMajor,
+    // FileMinor, FileBuild) - generated from CARGO_PKG_VERSION by build.rs.
+    title: AppVersion.window-title();
     preferred-width: 900px;
     min-width: 700px;
     preferred-height: 460px;
@@ -27,6 +30,11 @@ export component AppWindow inherits Window {
     in property <bool> integrate-claim: false;
     in-out property <string> last-check: "Last check: -";
     in-out property <string> status-text;
+
+    // Active grid sort, kept in sync with Rust (original: the DevExpress
+    // sort glyph in the column header). -1 = unsorted.
+    in-out property <int> sort-column: -1;
+    in-out property <bool> sort-ascending: true;
 
     // Checkmarks of the "Acknowledge ..." menu items, synced from Rust
     // whenever the selection changes.
@@ -42,6 +50,7 @@ export component AppWindow inherits Window {
     callback activate-project();
     callback menu-action(action: string);
     callback selection-changed(row-index: int);
+    callback sort-changed(column: int);
 
     // Selection state used to enable/disable the context menu items
     // (mirrors MainForm.contextMenuStrip_Opening).
@@ -103,8 +112,13 @@ export component AppWindow inherits Window {
             }
         }
 
-        // --- Column headers (original: grid column captions) ---
-        TableHeader { show-claim-columns: root.integrate-claim; }
+        // --- Column headers (original: grid column captions + sort glyphs) ---
+        TableHeader {
+            show-claim-columns: root.integrate-claim;
+            sort-column: root.sort-column;
+            sort-ascending: root.sort-ascending;
+            column-clicked(column) => { root.sort-changed(column); }
+        }
 
         // --- Projects grid (original: projectsGridControl) ---
         Rectangle {

@@ -109,6 +109,29 @@ impl BuildStatus {
         }
     }
 
+    /// Resource key of the status description (original:
+    /// `BuildStatus.Key` with the `BuildStatus_` prefix the callers add:
+    /// `Value.ToString()` plus `_BuildInProgress` / `_Stuck` suffixes).
+    pub fn resource_key(&self) -> String {
+        let name = match self.value {
+            BuildStatusEnum::Unknown => "Unknown",
+            BuildStatusEnum::Disabled => "Disabled",
+            BuildStatusEnum::Aborted => "Aborted",
+            BuildStatusEnum::Successful => "Successful",
+            BuildStatusEnum::Indeterminate => "Indeterminate",
+            BuildStatusEnum::Unstable => "Unstable",
+            BuildStatusEnum::Failed => "Failed",
+        };
+        let mut key = format!("BuildStatus_{name}");
+        if self.is_in_progress {
+            key.push_str("_BuildInProgress");
+        }
+        if self.is_stuck {
+            key.push_str("_Stuck");
+        }
+        key
+    }
+
     /// Create from Jenkins color + stuck state
     /// (original: JenkinsService.GetStatus).
     pub fn from_jenkins_color(color: &str, stuck: bool) -> Self {

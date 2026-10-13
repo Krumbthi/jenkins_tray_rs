@@ -142,10 +142,10 @@ impl ConfigurationService {
         let Some(ref server_url) = project.server else {
             return;
         };
-        if let Some(target) = config.servers.iter_mut().find(|s| s.url == *server_url) {
-            if !target.projects.iter().any(|p| p.url == project.url) {
-                target.projects.push(project.clone());
-            }
+        if let Some(target) = config.servers.iter_mut().find(|s| s.url == *server_url)
+            && !target.projects.iter().any(|p| p.url == project.url)
+        {
+            target.projects.push(project.clone());
         }
     }
 

@@ -226,7 +226,7 @@ fn render_icons(status: &BuildStatus) -> Vec<ksni::Icon> {
         .map(|&size| {
             let rgba = status_icon_rgba(status, size);
             let data = rgba
-                .chunks_exact(4)
+                .as_chunks::<4>().0.iter()
                 .flat_map(|p| [p[3], p[0], p[1], p[2]]) // RGBA -> ARGB
                 .collect();
             ksni::Icon {

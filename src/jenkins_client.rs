@@ -272,15 +272,11 @@ fn child_bool<'doc, 'input>(node: Node<'doc, 'input>, name: &str) -> Option<bool
 fn extract_user_name(full_name: &str) -> String {
     let mut res = full_name;
 
-    if let Some(index) = res.find(" <") {
-        if index > 0 {
-            res = &res[..index];
-        }
+    if let Some(index) = res.find(" <") && index > 0 {
+        res = &res[..index];
     }
-    if let Some(index) = res.find(" (") {
-        if index > 0 {
-            res = &res[..index];
-        }
+    if let Some(index) = res.find(" (") && index > 0 {
+        res = &res[..index];
     }
     res.trim().to_string()
 }
@@ -609,10 +605,8 @@ fn fill_in_build_causes(root: Node<'_, '_>) -> BuildCauses {
                 if remote_host.len() >= prefix.len() {
                     remote_host = &remote_host[prefix.len()..];
                 }
-                if let Some(index) = remote_host.find(" with note: ") {
-                    if index > 0 {
-                        remote_host = &remote_host[..index];
-                    }
+                if let Some(index) = remote_host.find(" with note: ") && index > 0 {
+                    remote_host = &remote_host[..index];
                 }
                 cause.starter = Some(remote_host.to_string());
             }
@@ -830,7 +824,7 @@ pub fn parse_build_parameters(json: &str) -> Result<Vec<JobParameter>> {
         // A choice must submit one of its choices: fall back to the first
         // choice when Jenkins reports no (or a stale) default.
         let (default, choices) =
-            if kind == ParamKind::Choice && !choices.iter().any(|choice| *choice == default) {
+            if kind == ParamKind::Choice && !choices.contains(&default) {
                 (choices.first().cloned().unwrap_or_default(), choices)
             } else {
                 (default, choices)

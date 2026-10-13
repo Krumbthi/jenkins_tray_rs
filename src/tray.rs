@@ -505,13 +505,11 @@ impl TrayNotifierState {
 /// "name (user1, user2)" (original: FormatProjectDetails).
 fn format_project_details(project_name: &str, build: Option<&crate::model::BuildDetails>, text: &mut String) {
     text.push_str(project_name);
-    if let Some(build) = build {
-        if !build.users.is_empty() {
-            let mut users: Vec<&String> = build.users.iter().collect();
-            users.sort();
-            let joined: Vec<&str> = users.iter().map(|name| name.as_str()).collect();
-            text.push_str(&format!(" ({})", joined.join(", ")));
-        }
+    if let Some(build) = build && !build.users.is_empty() {
+        let mut users: Vec<&String> = build.users.iter().collect();
+        users.sort();
+        let joined: Vec<&str> = users.iter().map(|name| name.as_str()).collect();
+        text.push_str(&format!(" ({})", joined.join(", ")));
     }
 }
 

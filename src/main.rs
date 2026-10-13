@@ -753,9 +753,9 @@ fn populate_settings(services: &Services, settings: &SettingsWindow) -> Result<(
 fn spawn_project_load(services: &Services, settings: &SettingsWindow, server: &Server) {
     let settings_weak = settings.as_weak();
     // original: string.Format(LoadingProjects_FormatString, server.Url)
-    settings_weak
-        .upgrade()
-        .map(|settings| settings.set_servers_status(format!("Loading projects from {}", server.url).into()));
+    if let Some(settings) = settings_weak.upgrade() {
+        settings.set_servers_status(format!("Loading projects from {}", server.url).into());
+    }
 
     let client = services.clients.for_server(server).clone();
     let server = server.clone();
@@ -1064,7 +1064,7 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
             };
             if let Some(ui) = ui.upgrade() {
                 ui.set_sort_column(sort.map_or(-1, |_| column));
-                ui.set_sort_ascending(sort.map_or(true, |sort| sort.ascending));
+                ui.set_sort_ascending(sort.is_none_or(|sort| sort.ascending));
                 if let Err(e) = refresh_rows(&ui, &services.config, &services.state) {
                     log::error!("Could not refresh the projects grid: {e}");
                 }
@@ -1412,10 +1412,10 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                     }
                     // original: AcknowledgeStatus / ClearAcknowledgedStatus
                     // trigger UpdateNotifier.
-                    if let Ok(config) = services.config.get_config() {
-                        if let Ok(mut tray) = services.tray.lock() {
-                            tray.update(&config);
-                        }
+                    if let Ok(config) = services.config.get_config()
+                        && let Ok(mut tray) = services.tray.lock()
+                    {
+                        tray.update(&config);
                     }
                 }
                 "ack-project" => {
@@ -1429,10 +1429,10 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                         log::error!("Could not save the acknowledgement: {e}");
                     }
                     // original: acknowledgement changes refresh the notifier
-                    if let Ok(config) = services.config.get_config() {
-                        if let Ok(mut tray) = services.tray.lock() {
-                            tray.update(&config);
-                        }
+                    if let Ok(config) = services.config.get_config()
+                        && let Ok(mut tray) = services.tray.lock()
+                    {
+                        tray.update(&config);
                     }
                 }
                 "auth-token" => {
@@ -1559,10 +1559,10 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
             lock_state(&services.state)
                 .settings_projects
                 .remove(&server.url);
-            if let Some(settings) = settings.upgrade() {
-                if let Err(e) = populate_settings(&services, &settings) {
-                    log::error!("Could not reload the settings dialog: {e}");
-                }
+            if let Some(settings) = settings.upgrade()
+                && let Err(e) = populate_settings(&services, &settings)
+            {
+                log::error!("Could not reload the settings dialog: {e}");
             }
             if let Some(ui) = ui.upgrade() {
                 on_configuration_updated(&services, &ui);
@@ -1585,10 +1585,10 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                 return;
             }
             // live job list for the newly selected server
-            if let Ok(config) = services.config.get_config() {
-                if let Some(server) = config.servers.get(index as usize) {
-                    spawn_project_load(&services, &settings, server);
-                }
+            if let Ok(config) = services.config.get_config()
+                && let Some(server) = config.servers.get(index as usize)
+            {
+                spawn_project_load(&services, &settings, server);
             }
         });
     }
@@ -1889,10 +1889,10 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                 log::error!("Could not close the server dialog: {e}");
             }
             // original: serversGridView.RefreshData() + UpdateProjectList(server)
-            if let Some(settings) = settings.upgrade() {
-                if let Err(e) = populate_settings(&services, &settings) {
-                    log::error!("Could not reload the settings dialog: {e}");
-                }
+            if let Some(settings) = settings.upgrade()
+                && let Err(e) = populate_settings(&services, &settings)
+            {
+                log::error!("Could not reload the settings dialog: {e}");
             }
             if let Some(ui) = ui.upgrade() {
                 on_configuration_updated(&services, &ui);
@@ -2043,38 +2043,37 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                 // New feature: there is no counterpart in the original; the
                 // plain counterpart is the "run-build" menu action above
                 // (`JenkinsService.SafeRunBuild`).
-                if let Ok(config) = services.config.get_config() {
-                    if let Some((server, project)) =
+                if let Ok(config) = services.config.get_config()
+                    && let Some((server, project)) =
                         project_in(&config, &server_url, &project_url)
-                    {
-                        let client = services.clients.for_server(server).clone();
-                        let server = server.clone();
-                        let project = project.clone();
-                        let name = project.name.clone();
-                        let message_box = message_box.clone();
-                        services.runtime.spawn(async move {
-                            if let Err(e) = jenkins_client::trigger_build_parameters(
-                                &client, &server, &project, &values,
-                            )
-                            .await
-                            {
-                                // New feature: no original counterpart; the
-                                // error box matches the plain RunBuild's
-                                // (`RunBuildFailed_Text`).
-                                let cause = errors::root_cause(&e);
-                                log::error!(
-                                    "Failed to trigger a parameterized build of {name}: {cause}"
-                                );
-                                show_message_box(
-                                    &message_box,
-                                    "Error",
-                                    &format!("Failed running build: {cause}."),
-                                );
-                            } else {
-                                log::info!("Build triggered for {name}");
-                            }
-                        });
-                    }
+                {
+                    let client = services.clients.for_server(server).clone();
+                    let server = server.clone();
+                    let project = project.clone();
+                    let name = project.name.clone();
+                    let message_box = message_box.clone();
+                    services.runtime.spawn(async move {
+                        if let Err(e) = jenkins_client::trigger_build_parameters(
+                            &client, &server, &project, &values,
+                        )
+                        .await
+                        {
+                            // New feature: no original counterpart; the
+                            // error box matches the plain RunBuild's
+                            // (`RunBuildFailed_Text`).
+                            let cause = errors::root_cause(&e);
+                            log::error!(
+                                "Failed to trigger a parameterized build of {name}: {cause}"
+                            );
+                            show_message_box(
+                                &message_box,
+                                "Error",
+                                &format!("Failed running build: {cause}."),
+                            );
+                        } else {
+                            log::info!("Build triggered for {name}");
+                        }
+                    });
                 }
             }
             if let Err(e) = dialog.hide() {

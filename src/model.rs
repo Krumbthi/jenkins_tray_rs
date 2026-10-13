@@ -1,8 +1,7 @@
-/// Domain model for Jenkins Tray.
-///
-/// Mirrors C# `JenkinsTray.Entities` namespace with data structures
-/// for Jenkins server, projects, build status, and configuration.
-
+//! Domain model for Jenkins Tray.
+//!
+//! Mirrors C# `JenkinsTray.Entities` namespace with data structures
+//! for Jenkins server, projects, build status, and configuration.
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::cmp::Ordering;
@@ -334,6 +333,8 @@ pub struct ClaimDetails {
 pub enum BuildCauseEnum {
     #[default]
     Unknown,
+    /// Name kept verbatim from the original C# enum (`BuildCauseEnum.SCM`).
+    #[allow(clippy::upper_case_acronyms)]
     SCM,
     Timer,
     User,

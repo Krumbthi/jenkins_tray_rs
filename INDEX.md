@@ -1,6 +1,6 @@
 # Codebase Index: jenkins_tray
 
-> Generated: 2026-10-13 11:25:27 UTC | Files: 17 | Lines: 8661
+> Generated: 2026-10-13 11:38:48 UTC | Files: 17 | Lines: 8654
 > Languages: Markdown (3), Rust (13), TOML (1)
 
 ## Directory Structure
@@ -445,7 +445,7 @@ jenkins_tray/
 
 ## src/main.rs
 
-**Language:** Rust | **Size:** 99.1 KB | **Lines:** 2426
+**Language:** Rust | **Size:** 98.9 KB | **Lines:** 2419
 
 **Imports:**
 - `std::cell::RefCell`

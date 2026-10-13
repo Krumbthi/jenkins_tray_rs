@@ -1,7 +1,8 @@
 //! Main application window UI definition.
 //!
 //! Migrated from the original C# `JenkinsTray.UI.MainForm`:
-//! toolbar (Settings / Refresh / Exit / Check for updates / About),
+//! toolbar (Settings / Refresh / Check for updates / About - no Exit
+//! button, removed on request; exiting stays in the tray menu),
 //! projects grid grouped by server, context menu, F5 refresh and the
 //! "Last check:" status bar.
 
@@ -46,7 +47,6 @@ export component AppWindow inherits Window {
     callback open-settings();
     callback check-for-updates();
     callback open-about();
-    callback exit-app();
     callback activate-project();
     callback menu-action(action: string);
     callback selection-changed(row-index: int);
@@ -92,11 +92,6 @@ export component AppWindow inherits Window {
                     text: @tr("Refresh");
                     width: 90px;
                     clicked => { root.refresh-projects(); }
-                }
-                Button {
-                    text: @tr("Exit");
-                    width: 70px;
-                    clicked => { root.exit-app(); }
                 }
                 Button {
                     text: @tr("Check for updates");

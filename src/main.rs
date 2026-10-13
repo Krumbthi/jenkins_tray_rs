@@ -1082,13 +1082,6 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
         }
     });
 
-    // Toolbar "Exit" / tray "Exit" (original: Application.Exit).
-    ui.on_exit_app(move || {
-        if let Err(e) = slint::quit_event_loop() {
-            log::error!("Could not quit the event loop: {e}");
-        }
-    });
-
     // Double-click on a row (original: projectsGridView_DoubleClick).
     ui.on_activate_project({
         let services = services.clone();

@@ -1,6 +1,6 @@
 # Codebase Index: jenkins_tray
 
-> Generated: 2026-10-12 14:05:12 UTC | Files: 17 | Lines: 8295
+> Generated: 2026-10-13 11:25:27 UTC | Files: 17 | Lines: 8661
 > Languages: Markdown (3), Rust (13), TOML (1)
 
 ## Directory Structure
@@ -53,7 +53,9 @@ jenkins_tray/
 - `## One thing I would *not* port literally`
 
 **README.md**
-- `# Slint Rust Template`
+- `## About`
+- `## Usage`
+- `## Logging`
 
 **src/app_update.rs**
 - `pub enum UpdateSource`
@@ -98,7 +100,6 @@ jenkins_tray/
 - `pub async fn remove_from_queue( client: &reqwest::Client, server: &Server, queue_id: u64, ) -> Result<()>`
 - `pub enum ParamKind`
 - `pub struct JobParameter`
-- `pub fn parse_build_parameters(json: &str) -> Result<Vec<JobParameter>>`
 - `pub async fn get_build_parameters( client: &reqwest::Client, server: &Server, project: &Project, ) -> Result<Vec<JobParameter>>`
 - `pub async fn trigger_build_parameters( client: &reqwest::Client, server: &Server, project: &Project, params: &[(String, String)], ) -> Result<()>`
 - `pub async fn claim_build( server: &Server, project: &Project, build_number: u32, reason: &str, sticky: bool, cache: &SharedCache, ) -> Result<()>`
@@ -175,7 +176,7 @@ jenkins_tray/
 
 ## INDEX.md
 
-**Language:** Markdown | **Size:** 26.8 KB | **Lines:** 946
+**Language:** Markdown | **Size:** 27.5 KB | **Lines:** 967
 
 **Declarations:**
 
@@ -191,7 +192,7 @@ jenkins_tray/
 
 ## README.md
 
-**Language:** Markdown | **Size:** 1.7 KB | **Lines:** 38
+**Language:** Markdown | **Size:** 2.8 KB | **Lines:** 67
 
 **Declarations:**
 
@@ -209,7 +210,7 @@ jenkins_tray/
 
 ## src/app_update.rs
 
-**Language:** Rust | **Size:** 14.6 KB | **Lines:** 374
+**Language:** Rust | **Size:** 16.4 KB | **Lines:** 411
 
 **Imports:**
 - `std::collections::HashMap`
@@ -222,6 +223,8 @@ jenkins_tray/
 **Declarations:**
 
 `const URL: &str = "https://raw.githubusercontent.com/zionyx/jenkins-tray/master/scripts/version.properties"`
+
+`const UPDATE_FEED_AVAILABLE: bool = false`
 
 `const UPDATE_DELAY: Duration = Duration::from_secs(5)`
 
@@ -245,10 +248,12 @@ jenkins_tray/
   `fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result`
 
 
+`type NewVersionHandler = Arc<dyn Fn(&str, &str) + Send + Sync>`
+
 **`impl ApplicationUpdateService`**
   `pub fn new(runtime: tokio::runtime::Handle, config: Arc<ConfigurationService>) -> Arc<Self>`
 
-  `pub fn on_new_version(&self, handler: Arc<dyn Fn(&str, &str) + Send + Sync>)`
+  `pub fn on_new_version(&self, handler: NewVersionHandler)`
 
   `pub fn initialize(self: Arc<Self>)`
 
@@ -359,13 +364,13 @@ jenkins_tray/
 
 ## src/jenkins_client.rs
 
-**Language:** Rust | **Size:** 49.5 KB | **Lines:** 1283
+**Language:** Rust | **Size:** 62.5 KB | **Lines:** 1564
 
 **Imports:**
 - `std::collections::{HashMap, HashSet}`
 - `std::sync::{Arc, Mutex}`
 - `std::time::Duration`
-- `anyhow::{anyhow, Context, Result}`
+- `anyhow::{anyhow, bail, Context, Result}`
 - `roxmltree::{Document, Node}`
 - `crate::model::{
     AllBuildDetails, BuildCauses, BuildCause, BuildCauseEnum, BuildDetails, BuildStatus,
@@ -416,7 +421,23 @@ jenkins_tray/
 
 `fn fill_in_claim_details(root: Node<'_, '_>) -> Option<ClaimDetails>`
 
+`fn parse_build_parameters_from(root: &serde_json::Value) -> Vec<JobParameter>`
+
+`fn definitions(root: &serde_json::Value) -> Vec<&serde_json::Value>`
+
 `fn json_scalar_to_string(value: &serde_json::Value) -> String`
+
+`fn dynamic_choice_names(root: &serde_json::Value) -> Vec<String>`
+
+`fn apply_form_choices(root: &mut serde_json::Value, form_html: &str) -> usize`
+
+`fn extract_form_choices(form_html: &str, name: &str) -> Vec<String>`
+
+`fn attribute_value(tag: &str, attr: &str) -> Option<String>`
+
+`fn unescape_html(text: &str) -> String`
+
+`async fn build_form( client: &reqwest::Client, credentials: &Credentials, server: &Server, project: &Project, ) -> Result<String>`
 
 `mod tests`
 
@@ -424,7 +445,7 @@ jenkins_tray/
 
 ## src/main.rs
 
-**Language:** Rust | **Size:** 99.3 KB | **Lines:** 2427
+**Language:** Rust | **Size:** 99.1 KB | **Lines:** 2426
 
 **Imports:**
 - `std::cell::RefCell`
@@ -555,7 +576,7 @@ jenkins_tray/
 
 ## src/model.rs
 
-**Language:** Rust | **Size:** 17.5 KB | **Lines:** 459
+**Language:** Rust | **Size:** 17.6 KB | **Lines:** 460
 
 **Imports:**
 - `serde::{Deserialize, Serialize}`
@@ -868,7 +889,7 @@ jenkins_tray/
 
 ## src/tray.rs
 
-**Language:** Rust | **Size:** 22.9 KB | **Lines:** 619
+**Language:** Rust | **Size:** 22.9 KB | **Lines:** 617
 
 **Imports:**
 - `std::collections::HashMap`

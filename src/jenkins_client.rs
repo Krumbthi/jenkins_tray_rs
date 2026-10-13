@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use roxmltree::{Document, Node};
 
 use crate::model::{
@@ -738,9 +738,13 @@ pub async fn remove_from_queue(
 pub enum ParamKind {
     /// `StringParameterDefinition` / `TextParameterDefinition` - and the
     /// fallback for every unknown type, including unochoice's
-    /// `ChoiceParameter`, whose choices only exist in its runtime script.
+    /// `ChoiceParameter` when its choices cannot be recovered from the
+    /// build form (they only exist in its runtime script).
     Text,
-    /// `ChoiceParameterDefinition` with a static `choices` array.
+    /// A `*Choice*` parameter with a choices list: the static `choices`
+    /// array of a `ChoiceParameterDefinition`, or the options recovered
+    /// from the rendered build form for Active Choices
+    /// (`org.biouno.unochoice.*`) definitions.
     Choice,
     /// `BooleanParameterDefinition`.
     Boolean,
@@ -761,28 +765,16 @@ pub struct JobParameter {
     pub choices: Vec<String>,
 }
 
-/// Parses the parameter definitions out of a `<job>/api/json` answer.
+/// Parses the parameter definitions of a `<job>/api/json` document.
 ///
 /// Current Jenkins reports them under `property`, older versions under
 /// `actions`; both are read (`property` first) and duplicates by name are
-/// dropped, so a job is listed exactly once.
-pub fn parse_build_parameters(json: &str) -> Result<Vec<JobParameter>> {
-    let root: serde_json::Value =
-        serde_json::from_str(json).context("Could not parse the job's JSON answer")?;
-
-    let mut definitions: Vec<&serde_json::Value> = Vec::new();
-    for key in ["property", "actions"] {
-        if let Some(items) = root.get(key).and_then(|value| value.as_array()) {
-            for item in items {
-                if let Some(list) = item.get("parameterDefinitions").and_then(|v| v.as_array()) {
-                    definitions.extend(list.iter());
-                }
-            }
-        }
-    }
-
+/// dropped, so a job is listed exactly once. The caller may have filled
+/// the choices of Active Choices parameters into the document first (see
+/// [`apply_form_choices`]).
+fn parse_build_parameters_from(root: &serde_json::Value) -> Vec<JobParameter> {
     let mut parameters: Vec<JobParameter> = Vec::new();
-    for definition in definitions {
+    for definition in definitions(root) {
         let Some(name) = definition.get("name").and_then(|value| value.as_str()) else {
             continue;
         };
@@ -838,7 +830,23 @@ pub fn parse_build_parameters(json: &str) -> Result<Vec<JobParameter>> {
             choices,
         });
     }
-    Ok(parameters)
+    parameters
+}
+
+/// Every parameter definition under `property` and `actions` (current
+/// Jenkins reports them under `property`, older versions under `actions`).
+fn definitions(root: &serde_json::Value) -> Vec<&serde_json::Value> {
+    let mut definitions: Vec<&serde_json::Value> = Vec::new();
+    for key in ["property", "actions"] {
+        if let Some(items) = root.get(key).and_then(|value| value.as_array()) {
+            for item in items {
+                if let Some(list) = item.get("parameterDefinitions").and_then(|v| v.as_array()) {
+                    definitions.extend(list.iter());
+                }
+            }
+        }
+    }
+    definitions
 }
 
 /// Stringifies a JSON scalar used as a parameter value (`value` is a string
@@ -851,6 +859,165 @@ fn json_scalar_to_string(value: &serde_json::Value) -> String {
         serde_json::Value::Null => String::new(),
         other => other.to_string(),
     }
+}
+
+/// The names of the parameters whose `type` is a `*Choice*` variant but
+/// that report no static `choices`: Active Choices
+/// (`org.biouno.unochoice.*`), whose list comes from a server-side script.
+fn dynamic_choice_names(root: &serde_json::Value) -> Vec<String> {
+    definitions(root)
+        .into_iter()
+        .filter(|definition| {
+            let is_choice = definition
+                .get("type")
+                .and_then(|value| value.as_str())
+                .is_some_and(|type_name| type_name.contains("Choice"));
+            let has_choices = definition
+                .get("choices")
+                .and_then(|value| value.as_array())
+                .is_some_and(|choices| !choices.is_empty());
+            is_choice && !has_choices
+        })
+        .filter_map(|definition| definition.get("name").and_then(|value| value.as_str()))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Fills the `choices` of the Active Choices definitions in `root` from
+/// the rendered build form; returns how many parameters were filled.
+///
+/// The filled choices are parsed exactly like the static `choices` array
+/// of a `ChoiceParameterDefinition` (same kind mapping and default
+/// fallback, see `parse_build_parameters_from`).
+fn apply_form_choices(root: &mut serde_json::Value, form_html: &str) -> usize {
+    let mut filled = 0;
+    for key in ["property", "actions"] {
+        let Some(items) = root.get_mut(key).and_then(|value| value.as_array_mut()) else {
+            continue;
+        };
+        for item in items {
+            let Some(list) = item
+                .get_mut("parameterDefinitions")
+                .and_then(|value| value.as_array_mut())
+            else {
+                continue;
+            };
+            for definition in list {
+                let is_choice = definition
+                    .get("type")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|type_name| type_name.contains("Choice"));
+                let has_choices = definition
+                    .get("choices")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|choices| !choices.is_empty());
+                let Some(name) = definition.get("name").and_then(|value| value.as_str()) else {
+                    continue;
+                };
+                if !is_choice || has_choices {
+                    continue;
+                }
+                let choices = extract_form_choices(form_html, name);
+                if !choices.is_empty() {
+                    definition["choices"] = serde_json::Value::Array(
+                        choices.into_iter().map(serde_json::Value::String).collect(),
+                    );
+                    filled += 1;
+                }
+            }
+        }
+    }
+    filled
+}
+
+/// Extracts the option values of the Active Choices parameter `name` from
+/// the server-rendered build form.
+///
+/// The plugin renders each dynamic choice as a hidden
+/// `<input name="name" ... value="NAME">` followed by a
+/// `<select name="value"><option value="V">...` - the only place where the
+/// choices exist (the JSON API does not export them). Returns an empty
+/// vector when the markup is not found (e.g. other Jenkins/plugin
+/// versions); the parameter then stays a text input.
+fn extract_form_choices(form_html: &str, name: &str) -> Vec<String> {
+    let mut from = 0;
+    while let Some(rel) = form_html[from..].find("<input") {
+        let tag_start = from + rel;
+        let Some(tag_end_rel) = form_html[tag_start..].find('>') else {
+            break;
+        };
+        let tag_end = tag_start + tag_end_rel;
+        let tag = &form_html[tag_start..tag_end];
+        from = tag_end + 1;
+        if attribute_value(tag, "name").as_deref() != Some("name")
+            || attribute_value(tag, "value").as_deref() != Some(name)
+        {
+            continue;
+        }
+        // The parameter's block ends with the next form row (labelled by
+        // the next parameter) or the next parameter's hidden input; the
+        // cap guards against unknown markup.
+        let rest = &form_html[tag_end..];
+        let bound = ["<input name=\"name\"", "jenkins-form-label"]
+            .iter()
+            .filter_map(|marker| rest.find(marker))
+            .min()
+            .unwrap_or(rest.len().min(16 * 1024));
+        let block = &rest[..bound];
+        // the drop-down holding the evaluated choices
+        let Some(select_rel) = block.find("<select") else {
+            return Vec::new();
+        };
+        let Some(close_rel) = block[select_rel..].find("</select>") else {
+            return Vec::new();
+        };
+        let select = &block[select_rel..select_rel + close_rel];
+        // every <option value="...">
+        let mut options = Vec::new();
+        let mut pos = 0;
+        while let Some(option_rel) = select[pos..].find("<option") {
+            let option_start = pos + option_rel;
+            let after_marker = &select[option_start + "<option".len()..];
+            if !(after_marker.starts_with('>')
+                || after_marker.starts_with(' ')
+                || after_marker.starts_with('\t')
+                || after_marker.starts_with('\n')
+                || after_marker.starts_with('\r'))
+            {
+                // e.g. <optgroup> - not an option
+                pos = option_start + "<option".len();
+                continue;
+            }
+            let Some(option_end_rel) = select[option_start..].find('>') else {
+                break;
+            };
+            let option_tag = &select[option_start..=option_start + option_end_rel];
+            pos = option_start + option_end_rel + 1;
+            if let Some(value) = attribute_value(option_tag, "value") {
+                options.push(unescape_html(&value));
+            }
+        }
+        return options;
+    }
+    Vec::new()
+}
+
+/// Reads `attr="value"` out of a raw HTML tag (double-quoted attributes).
+fn attribute_value(tag: &str, attr: &str) -> Option<String> {
+    let needle = format!("{attr}=\"");
+    let start = tag.find(&needle)? + needle.len();
+    let end = tag[start..].find('"')?;
+    Some(tag[start..start + end].to_string())
+}
+
+/// Decodes the entities Jenkins uses in form values (`&amp;` last, so a
+/// literal `&amp;lt;` decodes to `&lt;` and not to `<`).
+fn unescape_html(text: &str) -> String {
+    text.replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 /// Downloads the parameter definitions of a job for the new
@@ -869,8 +1036,68 @@ pub async fn get_build_parameters(
     let request = authenticated(client.get(&url), &credentials).query(&[("tree", TREE)]);
     let response = request.send().await?.error_for_status()?;
     let text = response.text().await?;
-    parse_build_parameters(&text)
-        .with_context(|| format!("Could not load the parameters of {}", project.name))
+    let mut root: serde_json::Value = serde_json::from_str(&text)
+        .context("Could not parse the job's JSON answer")
+        .with_context(|| format!("Could not load the parameters of {}", project.name))?;
+
+    // Active Choices parameters (`org.biouno.unochoice.*`) do not export
+    // their choices over the JSON API - the list is produced by a
+    // server-side script and only exists in the rendered `<job>/build`
+    // form. Recover it from there so the dialog shows the same drop-downs
+    // as the web UI; on any failure the parameters stay text inputs (new
+    // feature - the original C# application had no parameter dialog).
+    let dynamic = dynamic_choice_names(&root);
+    if !dynamic.is_empty() {
+        match build_form(client, &credentials, server, project).await {
+            Ok(html) => {
+                let filled = apply_form_choices(&mut root, &html);
+                if filled > 0 {
+                    log::info!(
+                        "Recovered the choices of {filled} Active Choices parameter(s) of {} from the build form",
+                        project.name
+                    );
+                } else {
+                    log::warn!(
+                        "The build form of {} did not expose choices for {} - they stay text inputs",
+                        project.name,
+                        dynamic.join(", ")
+                    );
+                }
+            }
+            Err(e) => log::warn!(
+                "Could not load the build form of {} - its Active Choices parameters stay text inputs: {e}",
+                project.name
+            ),
+        }
+    }
+    Ok(parse_build_parameters_from(&root))
+}
+
+/// Downloads the rendered parameterized-build form (`<job>/build`) - the
+/// only source of the Active Choices choices.
+async fn build_form(
+    client: &reqwest::Client,
+    credentials: &Credentials,
+    server: &Server,
+    project: &Project,
+) -> Result<String> {
+    let url = concat_urls(&rebase_url(&project.url, server), &["build"]);
+    log::info!("Loading the build form of {} at {url}", project.name);
+    let response = authenticated(client.get(&url), credentials)
+        .send()
+        .await
+        .with_context(|| format!("Could not download {url}"))?;
+    let status = response.status();
+    // Jenkins 2.580.1 answers `GET <job>/build` - the parameterized form -
+    // with "405 Method Not Allowed" while still serving the complete form
+    // body (web browsers render it just the same); accept it next to 200.
+    if !status.is_success() && status.as_u16() != 405 {
+        bail!("The build form {url} returned {status}");
+    }
+    response
+        .text()
+        .await
+        .with_context(|| format!("Could not read the build form {url}"))
 }
 
 /// Triggers a parameterized build (new feature: the original `RunBuild`
@@ -971,6 +1198,14 @@ pub async fn claim_build(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Parses a `<job>/api/json` answer like the production entry point
+    /// (`get_build_parameters` passes its already-parsed document to
+    /// `parse_build_parameters_from`).
+    fn parse_build_parameters(json: &str) -> Result<Vec<JobParameter>> {
+        let root: serde_json::Value = serde_json::from_str(json).expect("test JSON must parse");
+        Ok(parse_build_parameters_from(&root))
+    }
     use crate::model::BuildStatusEnum;
 
     #[test]
@@ -1273,5 +1508,57 @@ mod tests {
         }"#;
         let params = parse_build_parameters(json).unwrap();
         assert_eq!(params[0].default, "QT6_9_2");
+    }
+
+    /// The rendered `<job>/build` fragment of the live server (Jenkins
+    /// 2.580.1 + Active Choices plugin) with two unochoice parameters.
+    const ACTIVE_CHOICE_FORM: &str = r#"<tbody>
+<div class="jenkins-form-item tr "><div class="jenkins-form-label help-sibling">QT_VERSION</div><div class="setting-main"><div id="choice-parameter-594708656535600-spinner" class="ac-spinner"><p class="jenkins-spinner"></div><div name="parameter" description="" id="choice-parameter-594708656535600" class="active-choice"><input name="name" type="hidden" value="QT_VERSION"><div class="jenkins-select ac-ignore"><select name="value" class="jenkins-select__input"><option value="6.12.0">6.12.0</option><option value="6.9.2">6.9.2</option></select></div></div></div><div class="validation-error-area"></div></div>
+<div class="jenkins-form-item tr "><div class="jenkins-form-label help-sibling">REPO_BRANCH</div><div class="setting-main"><div name="parameter" description="" id="choice-parameter-594708657846500" class="active-choice"><input name="name" type="hidden" value="REPO_BRANCH"><div class="jenkins-select ac-ignore"><select name="value" class="jenkins-select__input"><option value="CMake_HxCommenFiles">CMake_HxCommenFiles</option><option value="cmake">cmake</option><option value="qml_discard_compatibility">qml_discard_compatibility</option><option value="wip_migration">wip_migration</option></select></div></div></div></div>
+</tbody>"#;
+
+    #[test]
+    fn extracts_active_choice_options_from_the_build_form() {
+        assert_eq!(
+            extract_form_choices(ACTIVE_CHOICE_FORM, "QT_VERSION"),
+            ["6.12.0", "6.9.2"]
+        );
+        assert_eq!(
+            extract_form_choices(ACTIVE_CHOICE_FORM, "REPO_BRANCH"),
+            ["CMake_HxCommenFiles", "cmake", "qml_discard_compatibility", "wip_migration"]
+        );
+        assert!(extract_form_choices(ACTIVE_CHOICE_FORM, "NOT_THERE").is_empty());
+    }
+
+    #[test]
+    fn active_choice_choices_are_recovered_before_parsing() {
+        // The JSON API knows the parameter but not its choices; the form
+        // fills them in, and the shared parser maps it to a drop-down.
+        let json = r#"{
+            "property": [
+                {"parameterDefinitions": [
+                    {"name": "QT_VERSION",
+                     "type": "ChoiceParameter",
+                     "description": "Qt version to build against",
+                     "defaultParameterValue": {"value": "6.12.0"}},
+                    {"name": "BUILD_TYPE",
+                     "type": "ChoiceParameterDefinition",
+                     "defaultParameterValue": {"value": "release"},
+                     "choices": ["release", "debug"]}
+                ]}
+            ]
+        }"#;
+        let mut root: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(dynamic_choice_names(&root), ["QT_VERSION"]);
+        assert_eq!(apply_form_choices(&mut root, ACTIVE_CHOICE_FORM), 1);
+
+        let params = parse_build_parameters_from(&root);
+        // the recovered choices are parsed like static ones
+        assert_eq!(params[0].kind, ParamKind::Choice);
+        assert_eq!(params[0].choices, ["6.12.0", "6.9.2"]);
+        assert_eq!(params[0].default, "6.12.0");
+        // static choices stay untouched
+        assert_eq!(params[1].kind, ParamKind::Choice);
+        assert_eq!(params[1].choices, ["release", "debug"]);
     }
 }

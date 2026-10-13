@@ -734,6 +734,188 @@ pub async fn remove_from_queue(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Build parameters (new feature - not in the original C# application)
+// ---------------------------------------------------------------------------
+
+/// The widget kind of a job parameter, mapped from the Jenkins `type` field
+/// of a parameter definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamKind {
+    /// `StringParameterDefinition` / `TextParameterDefinition` - and the
+    /// fallback for every unknown type, including unochoice's
+    /// `ChoiceParameter`, whose choices only exist in its runtime script.
+    Text,
+    /// `ChoiceParameterDefinition` with a static `choices` array.
+    Choice,
+    /// `BooleanParameterDefinition`.
+    Boolean,
+    /// `PasswordParameterDefinition`.
+    Password,
+}
+
+/// One parameter definition of a job: the input model of the new
+/// "Build with parameters" dialog.
+#[derive(Debug, Clone)]
+pub struct JobParameter {
+    pub name: String,
+    pub description: String,
+    pub kind: ParamKind,
+    /// The job's default value (empty when Jenkins reports none).
+    pub default: String,
+    /// The choices of a `ChoiceParameterDefinition` (empty otherwise).
+    pub choices: Vec<String>,
+}
+
+/// Parses the parameter definitions out of a `<job>/api/json` answer.
+///
+/// Current Jenkins reports them under `property`, older versions under
+/// `actions`; both are read (`property` first) and duplicates by name are
+/// dropped, so a job is listed exactly once.
+pub fn parse_build_parameters(json: &str) -> Result<Vec<JobParameter>> {
+    let root: serde_json::Value =
+        serde_json::from_str(json).context("Could not parse the job's JSON answer")?;
+
+    let mut definitions: Vec<&serde_json::Value> = Vec::new();
+    for key in ["property", "actions"] {
+        if let Some(items) = root.get(key).and_then(|value| value.as_array()) {
+            for item in items {
+                if let Some(list) = item.get("parameterDefinitions").and_then(|v| v.as_array()) {
+                    definitions.extend(list.iter());
+                }
+            }
+        }
+    }
+
+    let mut parameters: Vec<JobParameter> = Vec::new();
+    for definition in definitions {
+        let Some(name) = definition.get("name").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if parameters.iter().any(|p| p.name == name) {
+            continue;
+        }
+        let type_name = definition
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let description = definition
+            .get("description")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let default = definition
+            .get("defaultParameterValue")
+            .and_then(|value| value.get("value"))
+            .map(json_scalar_to_string)
+            .unwrap_or_default();
+        let choices: Vec<String> = definition
+            .get("choices")
+            .and_then(|value| value.as_array())
+            .map(|values| values.iter().map(json_scalar_to_string).collect())
+            .unwrap_or_default();
+
+        let kind = if type_name.contains("Boolean") {
+            ParamKind::Boolean
+        } else if type_name.contains("Password") {
+            ParamKind::Password
+        } else if type_name.contains("Choice") && !choices.is_empty() {
+            ParamKind::Choice
+        } else {
+            // String/Text definitions, unochoice's `ChoiceParameter` and
+            // anything unknown become a plain text input - the value can
+            // then be typed like in the reference shell script.
+            ParamKind::Text
+        };
+
+        // A choice must submit one of its choices: fall back to the first
+        // choice when Jenkins reports no (or a stale) default.
+        let (default, choices) =
+            if kind == ParamKind::Choice && !choices.iter().any(|choice| *choice == default) {
+                (choices.first().cloned().unwrap_or_default(), choices)
+            } else {
+                (default, choices)
+            };
+
+        parameters.push(JobParameter {
+            name: name.to_string(),
+            description: description.to_string(),
+            kind,
+            default,
+            choices,
+        });
+    }
+    Ok(parameters)
+}
+
+/// Stringifies a JSON scalar used as a parameter value (`value` is a string
+/// for most definitions, a JSON boolean for boolean definitions, and may be
+/// null, e.g. for password parameters).
+fn json_scalar_to_string(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Bool(flag) => flag.to_string(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// Downloads the parameter definitions of a job for the new
+/// "Build with parameters" dialog (`<job>/api/json` with a tree filter
+/// selecting only the parameter definitions).
+pub async fn get_build_parameters(
+    client: &reqwest::Client,
+    server: &Server,
+    project: &Project,
+) -> Result<Vec<JobParameter>> {
+    let credentials = Credentials::from(server);
+    let url = concat_urls(&rebase_url(&project.url, server), &["api/json"]);
+    const TREE: &str = "property[parameterDefinitions[name,type,description,defaultParameterValue[value],choices]],actions[parameterDefinitions[name,type,description,defaultParameterValue[value],choices]]";
+    log::info!("Loading build parameters of {} at {url}", project.name);
+
+    let request = authenticated(client.get(&url), &credentials).query(&[("tree", TREE)]);
+    let response = request.send().await?.error_for_status()?;
+    let text = response.text().await?;
+    parse_build_parameters(&text)
+        .with_context(|| format!("Could not load the parameters of {}", project.name))
+}
+
+/// Triggers a parameterized build (new feature: the original `RunBuild`
+/// posts `/build?delay=0sec`, which on a parameterized job only serves the
+/// "Build with Parameters" form instead of queueing a run - the reference
+/// script `jenkins_files/trigger_pipeline.sh` therefore uses
+/// `buildWithParameters` with the values as form data, as this does).
+///
+/// Like `trigger_build`, an authentication token / cause text configured on
+/// the project is appended as a query string.
+pub async fn trigger_build_parameters(
+    client: &reqwest::Client,
+    server: &Server,
+    project: &Project,
+    params: &[(String, String)],
+) -> Result<()> {
+    let credentials = Credentials::from(server);
+    let url = concat_urls(&rebase_url(&project.url, server), &["buildWithParameters"]);
+    log::info!("Running parameterized build at {url}");
+
+    let mut request = client.post(&url).form(params);
+    if let Some(token) = non_empty(project.authentication_token.as_deref()) {
+        request = request.query(&[("token", token)]);
+        if let Some(cause) = non_empty(project.cause_text.as_deref()) {
+            request = request.query(&[("cause", cause)]);
+        }
+    }
+    // Jenkins answers 201 Created with the queue item location; `.form()`
+    // sends the values as `application/x-www-form-urlencoded` body like
+    // `curl --data` in the reference script.
+    let response = authenticated(request, &credentials)
+        .send()
+        .await?
+        .error_for_status()?;
+    let _ = response.text().await?;
+    log::info!("Done running build");
+    Ok(())
+}
+
 /// Claims a build (original: `ClaimService.ClaimBuild`).
 ///
 /// Posts the claim JSON (`assignee`/`reason`/`sticky`, `DataContractJsonSerializer`
@@ -985,5 +1167,117 @@ mod tests {
             details.map(|d| d.status.value),
             details.and_then(|d| d.last_build.as_ref().map(|b| b.number))
         );
+    }
+
+    #[test]
+    fn parses_build_parameter_definitions() {
+        // Sampled from the live server (GammaRay_ps_test).
+        let json = r#"{
+            "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob",
+            "property": [
+                {"_class": "jenkins.model.BuildDiscarderProperty"},
+                {"_class": "hudson.model.ParametersDefinitionProperty",
+                 "parameterDefinitions": [
+                    {"_class": "hudson.model.StringParameterDefinition",
+                     "defaultParameterValue": {"_class": "hudson.model.StringParameterValue",
+                                               "value": "v3.4.0"},
+                     "description": null,
+                     "name": "SCM_BRANCH",
+                     "type": "StringParameterDefinition"},
+                    {"_class": "hudson.model.ChoiceParameterDefinition",
+                     "defaultParameterValue": {"_class": "hudson.model.StringParameterValue",
+                                               "value": "QT6_9_2"},
+                     "description": "Qt version",
+                     "name": "QT_VERSION",
+                     "type": "ChoiceParameterDefinition",
+                     "choices": ["QT5_15_2", "QT6_9_2"]}
+                 ]}
+            ]
+        }"#;
+        let params = parse_build_parameters(json).unwrap();
+        assert_eq!(params.len(), 2);
+
+        assert_eq!(params[0].name, "SCM_BRANCH");
+        assert_eq!(params[0].kind, ParamKind::Text);
+        assert_eq!(params[0].default, "v3.4.0");
+        assert_eq!(params[0].description, "");
+
+        assert_eq!(params[1].name, "QT_VERSION");
+        assert_eq!(params[1].kind, ParamKind::Choice);
+        assert_eq!(params[1].default, "QT6_9_2");
+        assert_eq!(params[1].choices, ["QT5_15_2", "QT6_9_2"]);
+    }
+
+    #[test]
+    fn build_parameter_kind_fallbacks() {
+        // unochoice reports `ChoiceParameter` without a static `choices`
+        // array, boolean defaults are JSON booleans, password defaults may
+        // be null, and definitions can live under `actions` (old Jenkins).
+        let json = r#"{
+            "actions": [
+                {"parameterDefinitions": [
+                    {"description": "GammaRay Git tag to build",
+                     "name": "GAMMARAY_VERSION",
+                     "type": "org.biouno.unochoice.ChoiceParameter",
+                     "defaultParameterValue": {"value": "v3.4.1"}},
+                    {"name": "CLEAN",
+                     "type": "BooleanParameterDefinition",
+                     "defaultParameterValue": {"value": true}},
+                    {"name": "SECRET",
+                     "type": "PasswordParameterDefinition",
+                     "defaultParameterValue": {"value": null}},
+                    {"name": "WHATEVER",
+                     "type": "some.PluginParameterDefinition"}
+                ]}
+            ]
+        }"#;
+        let params = parse_build_parameters(json).unwrap();
+        assert_eq!(params.len(), 4);
+
+        // The unochoice choices are unknown at rest -> typed as text.
+        assert_eq!(params[0].kind, ParamKind::Text);
+        assert_eq!(params[0].default, "v3.4.1");
+        assert_eq!(params[1].kind, ParamKind::Boolean);
+        assert_eq!(params[1].default, "true");
+        assert_eq!(params[2].kind, ParamKind::Password);
+        assert_eq!(params[2].default, "");
+        assert_eq!(params[3].kind, ParamKind::Text);
+    }
+
+    #[test]
+    fn build_parameters_deduplicate_property_and_actions() {
+        let json = r#"{
+            "property": [
+                {"parameterDefinitions": [
+                    {"name": "SCM_BRANCH", "type": "StringParameterDefinition"}
+                ]}
+            ],
+            "actions": [
+                {"parameterDefinitions": [
+                    {"name": "SCM_BRANCH", "type": "StringParameterDefinition"},
+                    {"name": "QT_VERSION", "type": "StringParameterDefinition"}
+                ]}
+            ]
+        }"#;
+        let params = parse_build_parameters(json).unwrap();
+        let names: Vec<_> = params.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["SCM_BRANCH", "QT_VERSION"]);
+    }
+
+    #[test]
+    fn build_parameter_choice_falls_back_to_first_choice() {
+        // A stale default outside the choices must not be submitted.
+        let json = r#"{
+            "property": [
+                {"parameterDefinitions": [
+                    {"name": "QT_VERSION",
+                     "type": "ChoiceParameterDefinition",
+                     "defaultParameterValue": {"value": "gone"},
+                     "choices": ["QT6_9_2", "QT5_15_2"]}
+                ]}
+            ]
+        }"#;
+        let params = parse_build_parameters(json).unwrap();
+        assert_eq!(params[0].default, "QT6_9_2");
     }
 }

@@ -1,6 +1,6 @@
 # Codebase Index: jenkins_tray
 
-> Generated: 2026-10-12 12:56:46 UTC | Files: 17 | Lines: 7793
+> Generated: 2026-10-12 14:05:12 UTC | Files: 17 | Lines: 8295
 > Languages: Markdown (3), Rust (13), TOML (1)
 
 ## Directory Structure
@@ -96,6 +96,11 @@ jenkins_tray/
 - `pub async fn trigger_build( client: &reqwest::Client, server: &Server, project: &Project, ) -> Result<()>`
 - `pub async fn stop_build( client: &reqwest::Client, server: &Server, project: &Project, ) -> Result<()>`
 - `pub async fn remove_from_queue( client: &reqwest::Client, server: &Server, queue_id: u64, ) -> Result<()>`
+- `pub enum ParamKind`
+- `pub struct JobParameter`
+- `pub fn parse_build_parameters(json: &str) -> Result<Vec<JobParameter>>`
+- `pub async fn get_build_parameters( client: &reqwest::Client, server: &Server, project: &Project, ) -> Result<Vec<JobParameter>>`
+- `pub async fn trigger_build_parameters( client: &reqwest::Client, server: &Server, project: &Project, params: &[(String, String)], ) -> Result<()>`
 - `pub async fn claim_build( server: &Server, project: &Project, build_number: u32, reason: &str, sticky: bool, cache: &SharedCache, ) -> Result<()>`
 
 **src/model.rs**
@@ -170,7 +175,7 @@ jenkins_tray/
 
 ## INDEX.md
 
-**Language:** Markdown | **Size:** 26.3 KB | **Lines:** 939
+**Language:** Markdown | **Size:** 26.8 KB | **Lines:** 946
 
 **Declarations:**
 
@@ -354,7 +359,7 @@ jenkins_tray/
 
 ## src/jenkins_client.rs
 
-**Language:** Rust | **Size:** 37.6 KB | **Lines:** 989
+**Language:** Rust | **Size:** 49.5 KB | **Lines:** 1283
 
 **Imports:**
 - `std::collections::{HashMap, HashSet}`
@@ -411,13 +416,15 @@ jenkins_tray/
 
 `fn fill_in_claim_details(root: Node<'_, '_>) -> Option<ClaimDetails>`
 
+`fn json_scalar_to_string(value: &serde_json::Value) -> String`
+
 `mod tests`
 
 ---
 
 ## src/main.rs
 
-**Language:** Rust | **Size:** 88.8 KB | **Lines:** 2226
+**Language:** Rust | **Size:** 99.3 KB | **Lines:** 2427
 
 **Imports:**
 - `std::cell::RefCell`
@@ -462,7 +469,7 @@ jenkins_tray/
 `fn next_sort(current: Option<GridSort>, key: SortKey) -> Option<GridSort>`
 
 `struct AppState`
-> Fields: `row_keys: Vec<Option<(String, String)>>`, `sort: Option<GridSort>`, `settings_projects: HashMap<String, Vec<Project>>`, `edit_server: EditServerContext`, `auth_token_target: Option<(String, String)>`, `claim_target: Option<(String, String, u32)>`
+> Fields: `row_keys: Vec<Option<(String, String)>>`, `sort: Option<GridSort>`, `settings_projects: HashMap<String, Vec<Project>>`, `edit_server: EditServerContext`, `auth_token_target: Option<(String, String)>`, `claim_target: Option<(String, String, u32)>`, `build_params_target: Option<(String, String)>`, `build_params: Vec<(String, String)>`
 
 `struct Services`
 > Fields: `config: Arc<ConfigurationService>`, `notifications: Arc<NotificationService>`, `clients: jenkins_client::Clients`, `updater: Rc<RefCell<ProjectsUpdateService>>`, `state: Arc<Mutex<AppState>>`, `tray: Arc<Mutex<TrayHub>>`, `app_update: Arc<ApplicationUpdateService>`, `runtime: tokio::runtime::Handle`
@@ -470,7 +477,7 @@ jenkins_tray/
 `fn lock_state(state: &Arc<Mutex<AppState>>) -> MutexGuard<'_, AppState>`
 
 `struct Windows`
-> Fields: `settings: Rc<SettingsWindow>`, `edit_server: Rc<EditServerWindow>`, `about: Rc<AboutWindow>`, `auth_token: Rc<AuthTokenWindow>`, `claim_build: Rc<ClaimBuildWindow>`, `message_box: Rc<MessageBoxWindow>`
+> Fields: `settings: Rc<SettingsWindow>`, `edit_server: Rc<EditServerWindow>`, `about: Rc<AboutWindow>`, `auth_token: Rc<AuthTokenWindow>`, `claim_build: Rc<ClaimBuildWindow>`, `build_params: Rc<BuildParamsWindow>`, `message_box: Rc<MessageBoxWindow>`
 
 `fn server_display_text(server: &Server) -> String`
 

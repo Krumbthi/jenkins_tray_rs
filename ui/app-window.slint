@@ -11,9 +11,9 @@ import { AppVersion } from "version.slint";
 import { SettingsWindow } from "settings.slint";
 import { EditServerWindow } from "edit-server.slint";
 import { AboutWindow } from "about.slint";
-import { AuthTokenWindow, ClaimBuildWindow, MessageBoxWindow } from "dialogs.slint";
+import { AuthTokenWindow, BuildParamsWindow, ClaimBuildWindow, MessageBoxWindow } from "dialogs.slint";
 
-export { SettingsWindow, EditServerWindow, AboutWindow, AuthTokenWindow, ClaimBuildWindow, MessageBoxWindow }
+export { SettingsWindow, EditServerWindow, AboutWindow, AuthTokenWindow, BuildParamsWindow, ClaimBuildWindow, MessageBoxWindow }
 
 export component AppWindow inherits Window {
     // original: string.Format("{0} v{1}.{2}.{3}", ProductName, FileMajor,
@@ -121,7 +121,7 @@ export component AppWindow inherits Window {
         }
 
         // --- Projects grid (original: projectsGridControl) ---
-        Rectangle {
+        grid-area := Rectangle {
             vertical-stretch: 1;
             background: #ffffff;
 
@@ -136,7 +136,12 @@ export component AppWindow inherits Window {
                 vertical-alignment: center;
             }
 
-            ContextMenuArea {
+            // The rows' TouchArea grabs every press (including the right
+            // button), so the right-click itself never reaches this area;
+            // the rows raise `context-menu-requested` and the menu is opened
+            // programmatically through `show()` at the pointer position
+            // (converted from window coordinates via `absolute-position`).
+            project-menu := ContextMenuArea {
                 ListView {
                     for item[i] in root.rows: delegate := ProjectRowView {
                         project-row: item;
@@ -150,6 +155,19 @@ export component AppWindow inherits Window {
                             root.selected-row = i;
                             root.selection-changed(i);
                             root.activate-project();
+                        }
+                        context-menu-requested(pos) => {
+                            // WinForms/DevExpress grids select the row under
+                            // the cursor before showing the context menu, so
+                            // the menu actions target the right-clicked row.
+                            root.selected-row = i;
+                            root.selection-changed(i);
+                            project-menu.show({
+                                x: delegate.absolute-position.x
+                                    - grid-area.absolute-position.x + pos.x,
+                                y: delegate.absolute-position.y
+                                    - grid-area.absolute-position.y + pos.y,
+                            });
                         }
                     }
                 }
@@ -172,6 +190,16 @@ export component AppWindow inherits Window {
                         title: @tr("Run build");
                         enabled: root.has-selection && !root.sel-in-progress;
                         activated => { root.menu-action("run-build"); }
+                    }
+                    MenuItem {
+                        // New feature (not in the original): the original only
+                        // posts `/build?delay=0sec`, which does not queue a run
+                        // on parameterized jobs; this opens the dialog that
+                        // posts `buildWithParameters` like the reference script
+                        // `jenkins_files/trigger_pipeline.sh`.
+                        title: @tr("Build with parameters…");
+                        enabled: root.has-selection && !root.sel-in-progress;
+                        activated => { root.menu-action("run-build-params"); }
                     }
                     MenuItem {
                         title: root.sel-queued && !root.sel-in-progress

@@ -106,6 +106,13 @@ struct AppState {
     /// Project targeted by the claim build dialog:
     /// `(server_url, project_url, claimed build number)`.
     claim_target: Option<(String, String, u32)>,
+    /// Project targeted by the "Build with parameters" dialog:
+    /// `(server_url, project_url)` (new feature).
+    build_params_target: Option<(String, String)>,
+    /// The `(name, value)` pairs shown in the "Build with parameters"
+    /// dialog: initialized from the job's defaults when the dialog opens
+    /// and updated by its `param-edited` callback (new feature).
+    build_params: Vec<(String, String)>,
 }
 
 /// Services captured by the Slint callbacks.
@@ -140,6 +147,7 @@ struct Windows {
     about: Rc<AboutWindow>,
     auth_token: Rc<AuthTokenWindow>,
     claim_build: Rc<ClaimBuildWindow>,
+    build_params: Rc<BuildParamsWindow>,
     message_box: Rc<MessageBoxWindow>,
 }
 
@@ -1157,6 +1165,7 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
         let ui = ui.as_weak();
         let auth_token = windows.auth_token.clone();
         let claim_build = windows.claim_build.clone();
+        let build_params = windows.build_params.clone();
         let message_box = windows.message_box.as_weak();
         move |action| {
             let ui = ui.unwrap();
@@ -1207,6 +1216,112 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                             );
                         } else {
                             log::info!("Build triggered for {name}");
+                        }
+                    });
+                }
+                "run-build-params" => {
+                    // New feature (not in the original): the original's
+                    // RunBuild posts `/build?delay=0sec`, which does not
+                    // queue a run on parameterized jobs. Fetch the job's
+                    // parameter definitions first and open the dialog that
+                    // posts `buildWithParameters` with the values as form
+                    // data, like the reference script
+                    // `jenkins_files/trigger_pipeline.sh`.
+                    lock_state(&services.state).build_params_target =
+                        Some((server_url.clone(), project_url.clone()));
+                    let client = services.clients.for_server(server).clone();
+                    let server = server.clone();
+                    let project = project.clone();
+                    let job = project.name.clone();
+                    let message_box = message_box.clone();
+                    let dialog = build_params.as_weak();
+                    let state = services.state.clone();
+                    services.runtime.spawn(async move {
+                        match jenkins_client::get_build_parameters(&client, &server, &project)
+                            .await
+                        {
+                            Err(e) => {
+                                let cause = errors::root_cause(&e);
+                                log::error!(
+                                    "Failed to load the build parameters of {job}: {cause}"
+                                );
+                                show_message_box(
+                                    &message_box,
+                                    "Error",
+                                    &format!("Failed to load the build parameters: {cause}."),
+                                );
+                            }
+                            Ok(params) if params.is_empty() => {
+                                // A job without parameters behaves like the
+                                // original "Run build".
+                                log::info!(
+                                    "{job} has no parameters - triggering a plain build"
+                                );
+                                if let Err(e) =
+                                    jenkins_client::trigger_build(&client, &server, &project)
+                                        .await
+                                {
+                                    let cause = errors::root_cause(&e);
+                                    log::error!("Failed to trigger a build of {job}: {cause}");
+                                    show_message_box(
+                                        &message_box,
+                                        "Error",
+                                        &format!("Failed running build: {cause}."),
+                                    );
+                                } else {
+                                    log::info!("Build triggered for {job}");
+                                }
+                            }
+                            Ok(params) => {
+                                // The dialog model and the authoritative
+                                // name/value list (updated by `param-edited`)
+                                // are both built on the event loop thread.
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    let rows: Vec<BuildParamRow> = params
+                                        .iter()
+                                        .map(|param| BuildParamRow {
+                                            name: param.name.as_str().into(),
+                                            description: param.description.as_str().into(),
+                                            kind: match param.kind {
+                                                jenkins_client::ParamKind::Text => 0,
+                                                jenkins_client::ParamKind::Choice => 1,
+                                                jenkins_client::ParamKind::Boolean => 2,
+                                                jenkins_client::ParamKind::Password => 3,
+                                            },
+                                            value: param.default.as_str().into(),
+                                            choices: ModelRc::new(VecModel::from(
+                                                param
+                                                    .choices
+                                                    .iter()
+                                                    .map(|choice| choice.as_str().into())
+                                                    .collect::<Vec<slint::SharedString>>(),
+                                            )),
+                                            choice_index: param
+                                                .choices
+                                                .iter()
+                                                .position(|choice| *choice == param.default)
+                                                .unwrap_or(0) as i32,
+                                        })
+                                        .collect();
+                                    {
+                                        let mut state = lock_state(&state);
+                                        state.build_params = params
+                                            .iter()
+                                            .map(|param| {
+                                                (param.name.clone(), param.default.clone())
+                                            })
+                                            .collect();
+                                    }
+                                    let dialog = dialog.unwrap();
+                                    dialog.set_job_label(format!("Job: {job}").into());
+                                    dialog.set_params(ModelRc::new(VecModel::from(rows)));
+                                    if let Err(e) = dialog.show() {
+                                        log::error!(
+                                            "Could not show the build parameters dialog: {e}"
+                                        );
+                                    }
+                                });
+                            }
                         }
                     });
                 }
@@ -1898,6 +2013,91 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
         });
     }
 
+    // --- Build with parameters dialog (new feature) ------------------------
+    {
+        // Every edit updates the authoritative name/value list; the dialog
+        // itself only renders the initial defaults.
+        let state = services.state.clone();
+        windows.build_params.on_param_edited(move |index, value| {
+            let mut state = lock_state(&state);
+            if let Some(entry) = state.build_params.get_mut(index as usize) {
+                entry.1 = value.to_string();
+            }
+        });
+    }
+
+    {
+        let services = services.clone();
+        let build_params = windows.build_params.as_weak();
+        let message_box = windows.message_box.as_weak();
+        windows.build_params.on_accepted(move || {
+            let dialog = build_params.unwrap();
+            let (target, values) = {
+                let mut state = lock_state(&services.state);
+                (
+                    state.build_params_target.take(),
+                    std::mem::take(&mut state.build_params),
+                )
+            };
+            if let Some((server_url, project_url)) = target {
+                // New feature: there is no counterpart in the original; the
+                // plain counterpart is the "run-build" menu action above
+                // (`JenkinsService.SafeRunBuild`).
+                if let Ok(config) = services.config.get_config() {
+                    if let Some((server, project)) =
+                        project_in(&config, &server_url, &project_url)
+                    {
+                        let client = services.clients.for_server(server).clone();
+                        let server = server.clone();
+                        let project = project.clone();
+                        let name = project.name.clone();
+                        let message_box = message_box.clone();
+                        services.runtime.spawn(async move {
+                            if let Err(e) = jenkins_client::trigger_build_parameters(
+                                &client, &server, &project, &values,
+                            )
+                            .await
+                            {
+                                // New feature: no original counterpart; the
+                                // error box matches the plain RunBuild's
+                                // (`RunBuildFailed_Text`).
+                                let cause = errors::root_cause(&e);
+                                log::error!(
+                                    "Failed to trigger a parameterized build of {name}: {cause}"
+                                );
+                                show_message_box(
+                                    &message_box,
+                                    "Error",
+                                    &format!("Failed running build: {cause}."),
+                                );
+                            } else {
+                                log::info!("Build triggered for {name}");
+                            }
+                        });
+                    }
+                }
+            }
+            if let Err(e) = dialog.hide() {
+                log::error!("Could not close the build parameters dialog: {e}");
+            }
+        });
+    }
+
+    {
+        let build_params = windows.build_params.as_weak();
+        let state = services.state.clone();
+        windows.build_params.on_canceled(move || {
+            {
+                let mut state = lock_state(&state);
+                state.build_params_target = None;
+                state.build_params.clear();
+            }
+            if let Err(e) = build_params.unwrap().hide() {
+                log::error!("Could not close the build parameters dialog: {e}");
+            }
+        });
+    }
+
     // --- Message box (original: XtraMessageBox OK / Yes / No buttons) ------
 
     {
@@ -2039,6 +2239,7 @@ fn main() -> Result<()> {
         about: Rc::new(AboutWindow::new()?),
         auth_token: Rc::new(AuthTokenWindow::new()?),
         claim_build: Rc::new(ClaimBuildWindow::new()?),
+        build_params: Rc::new(BuildParamsWindow::new()?),
         message_box: Rc::new(MessageBoxWindow::new()?),
     };
     windows

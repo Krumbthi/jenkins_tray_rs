@@ -240,6 +240,11 @@ export component ProjectRowView inherits Rectangle {
 
     callback clicked();
     callback double-clicked();
+    // Raised when the row is right-clicked (`position` is relative to the
+    // row). The row TouchArea grabs every press - including the right
+    // button - so the ancestor `ContextMenuArea` never sees the right-click
+    // itself; the parent forwards it to `ContextMenuArea.show()`.
+    callback context-menu-requested(position: Point);
 
     height: project-row.is-header ? 24px : 26px;
     background: project-row.is-header ? Ui.group-bg
@@ -294,6 +299,12 @@ export component ProjectRowView inherits Rectangle {
         height: parent.height;
         clicked => { root.clicked(); }
         double-clicked => { root.double-clicked(); }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down
+                && event.button == PointerEventButton.right) {
+                root.context-menu-requested({ x: touch.mouse-x, y: touch.mouse-y });
+            }
+        }
     }
 
     // Row tooltip (original: MainForm.projectsGridView_MouseMove shows the

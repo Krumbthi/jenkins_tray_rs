@@ -1,8 +1,10 @@
 //! Small dialogs - migrated from the original C#
 //! `JenkinsTray.UI.AuthenticationTokenForm`, `JenkinsTray.UI.ClaimBuildForm`
-//! and the `XtraMessageBox.Show` / `MessageBox.Show` error boxes.
+//! and the `XtraMessageBox.Show` / `MessageBox.Show` error boxes, plus the
+//! new "Build with parameters" dialog (the original only triggers plain
+//! builds).
 
-import { Button, CheckBox, LineEdit, TextEdit } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, ListView, TextEdit } from "std-widgets.slint";
 
 /// Generic message box (original: `XtraMessageBox.Show(message, caption)`
 /// with `MessageBoxButtons.OK`, and `MessageBoxButtons.YesNo` for the update
@@ -158,6 +160,138 @@ export component ClaimBuildWindow inherits Window {
         }
 
         Rectangle { vertical-stretch: 1; }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: @tr("OK");
+                width: 90px;
+                clicked => { root.accepted(); }
+            }
+            Button {
+                text: @tr("Cancel");
+                width: 90px;
+                clicked => { root.canceled(); }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Build with parameters (new feature - not in the original application)
+// ---------------------------------------------------------------------------
+
+/// One row of the "Build with parameters" dialog, built from a
+/// `jenkins_client::JobParameter`. `kind` is the `ParamKind` discriminant:
+/// 0 = text, 1 = choice, 2 = boolean, 3 = password. `value` is only the
+/// initial rendering (the job's default); edits are reported through
+/// `BuildParamsWindow.param-edited` because the Rust side keeps the
+/// authoritative name/value list for the final request.
+export struct BuildParamRow {
+    name: string,
+    description: string,
+    kind: int,
+    value: string,
+    choices: [string],
+    choice-index: int,
+}
+
+/// "Build with parameters" dialog (context menu: "Build with parameters").
+/// Layout follows the other dialogs: header label, scrolling list of
+/// parameter rows, OK/Cancel.
+export component BuildParamsWindow inherits Window {
+    in property <string> dialog-title: "Build with parameters";
+    in property <string> job-label;
+    in-out property <[BuildParamRow]> params;
+
+    callback param-edited(int, string);
+    callback accepted();
+    callback canceled();
+
+    title: root.dialog-title;
+    preferred-width: 500px;
+    min-width: 440px;
+    preferred-height: 430px;
+    min-height: 320px;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        Text {
+            height: 18px;
+            text: root.job-label;
+            font-weight: 700;
+            overflow: elide;
+        }
+
+        ListView {
+            vertical-stretch: 1;
+
+            for p[i] in root.params: Rectangle {
+                height: 60px;
+
+                // Boolean: the description sits above the checkbox, the
+                // checkbox itself carries the parameter name.
+                if (p.kind == 2): Text {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: 15px;
+                    text: p.description;
+                    color: #606060;
+                    font-size: 11px;
+                    overflow: elide;
+                }
+                if (p.kind == 2): bool-box := CheckBox {
+                    x: 0;
+                    y: 19px;
+                    width: parent.width;
+                    text: p.name;
+                    checked: p.value == "true";
+                    toggled => {
+                        root.param-edited(i, bool-box.checked ? "true" : "false");
+                    }
+                }
+
+                // Text/choice/password: name (and description) above the
+                // input control.
+                if (p.kind != 2): Text {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: 15px;
+                    text: p.description == "" ? p.name : p.name + " – " + p.description;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+                if (p.kind == 0): LineEdit {
+                    x: 0;
+                    y: 20px;
+                    width: parent.width;
+                    text: p.value;
+                    placeholder-text: p.description;
+                    edited(value) => { root.param-edited(i, value); }
+                }
+                if (p.kind == 3): LineEdit {
+                    x: 0;
+                    y: 20px;
+                    width: parent.width;
+                    text: p.value;
+                    input-type: password;
+                    edited(value) => { root.param-edited(i, value); }
+                }
+                if (p.kind == 1): ComboBox {
+                    x: 0;
+                    y: 20px;
+                    width: parent.width;
+                    model: p.choices;
+                    current-index: p.choice-index;
+                    selected(value) => { root.param-edited(i, value); }
+                }
+            }
+        }
 
         HorizontalLayout {
             spacing: 8px;

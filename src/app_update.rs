@@ -21,6 +21,10 @@
 //! - `PropertiesFile.ReadProperties` supports the full Java properties
 //!   syntax; the port parses plain `key=value` / `key:value` lines, which is
 //!   all the feed contains.
+//! - Update checks are disabled while the port has no update feed of its own
+//!   (see [`UPDATE_FEED_AVAILABLE`]): the original project's feed advertises
+//!   the original C# application, which would be offered as an "update" to
+//!   this fork.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -31,9 +35,20 @@ use anyhow::{bail, Context, Result};
 
 use crate::config::ConfigurationService;
 
-/// Update feed (original: `ApplicationUpdateService.URL`).
+/// Update feed (original: `ApplicationUpdateService.URL`). Not contacted
+/// while [`UPDATE_FEED_AVAILABLE`] is `false`.
 const URL: &str =
     "https://raw.githubusercontent.com/zionyx/jenkins-tray/master/scripts/version.properties";
+
+/// The port does not publish an update feed yet, so every check (startup,
+/// timer and the manual toolbar action) is skipped with a log line.
+///
+/// The original project's feed ([`URL`]) advertises the original C#
+/// application's version (`1.0.5.0`); with the port carrying its own version
+/// (`0.2.0.0`) it would always be offered as an "update", pointing users at
+/// the C# app's installer. Set to `true` once the port serves its own
+/// `version.properties` (original: the C# app always checks its own feed).
+const UPDATE_FEED_AVAILABLE: bool = false;
 
 /// 5 seconds delay for the 1st check on application start up
 /// (original: `DEFAULT_UPDATE_DELAY`).
@@ -97,6 +112,10 @@ impl std::fmt::Display for Version {
     }
 }
 
+/// The `NewVersionAvailable` subscriber (original: the C#
+/// `NewVersionAvailable` event delegate taking version + installer URL).
+type NewVersionHandler = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
 /// The running update service (original: the Spring-managed
 /// `ApplicationUpdateService` singleton).
 ///
@@ -117,7 +136,7 @@ pub struct ApplicationUpdateService {
     updating: AtomicBool,
     /// Original: the `NewVersionAvailable` event subscribed by
     /// `ApplicationUpdateHandler`.
-    on_new_version: RwLock<Option<Arc<dyn Fn(&str, &str) + Send + Sync>>>,
+    on_new_version: RwLock<Option<NewVersionHandler>>,
 }
 
 impl ApplicationUpdateService {
@@ -139,7 +158,7 @@ impl ApplicationUpdateService {
     }
 
     /// Registers the `NewVersionAvailable` handler.
-    pub fn on_new_version(&self, handler: Arc<dyn Fn(&str, &str) + Send + Sync>) {
+    pub fn on_new_version(&self, handler: NewVersionHandler) {
         match self.on_new_version.write() {
             Ok(mut slot) => *slot = Some(handler),
             Err(poisoned) => *poisoned.into_inner() = Some(handler),
@@ -150,6 +169,10 @@ impl ApplicationUpdateService {
     /// `Initialize()` creating the `Timer` and calling
     /// `EnableTimer(GeneralSettings.CheckForUpdates)`).
     pub fn initialize(self: Arc<Self>) {
+        if !UPDATE_FEED_AVAILABLE {
+            log::info!("Update checks disabled: this port has no update feed yet");
+            return;
+        }
         let check_for_updates = match self.config.get_config() {
             Ok(config) => config.general_settings.check_for_updates,
             Err(e) => {
@@ -172,6 +195,10 @@ impl ApplicationUpdateService {
     /// Only state transitions do anything; re-enabling restarts the 5-second
     /// initial delay like `Timer.Change(DEFAULT_UPDATE_DELAY, ...)`.
     pub fn enable_timer(self: Arc<Self>, enable: bool) {
+        if enable && !UPDATE_FEED_AVAILABLE {
+            log::info!("Scheduled update checks disabled: this port has no update feed yet");
+            return;
+        }
         let was_enabled = self.timer_enabled.swap(enable, Ordering::SeqCst);
         if was_enabled == enable {
             return; // original: EnableTimer only acts on a state change
@@ -215,6 +242,12 @@ impl ApplicationUpdateService {
     /// then. Errors propagate to the caller (the original logs them with
     /// `LoggingHelper.LogError` and rethrows; the timer callback ignores them).
     pub async fn check(&self, source: UpdateSource) -> Result<bool> {
+        if !UPDATE_FEED_AVAILABLE {
+            // The manual action still answers "No update available." below
+            // (original: DoCheckForUpdates hits the C# project's feed).
+            log::info!("Update check from {source} skipped: this port has no update feed yet");
+            return Ok(false);
+        }
         let check_for_updates = match self.config.get_config() {
             Ok(config) => config.general_settings.check_for_updates,
             Err(e) => {
@@ -366,9 +399,13 @@ mod tests {
     }
 
     #[test]
-    fn current_version_matches_the_original_file_version() {
-        // The feed publishes 1.0.5.0; the port carries the same version so
-        // the first check reports "No updates" like the original.
-        assert_eq!(current_version(), Version(1, 0, 5, 0));
+    fn current_version_is_the_package_version_as_four_parts() {
+        // `current_version()` is the port's version - the equivalent of the
+        // original C# app's assembly FileVersion (e.g. `1.0.5.0`) - rendered
+        // as major.minor.patch.revision like the feed's `1.0.5.0`.
+        assert_eq!(
+            current_version().to_string(),
+            format!("{}.0", env!("CARGO_PKG_VERSION"))
+        );
     }
 }

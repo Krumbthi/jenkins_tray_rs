@@ -36,29 +36,12 @@ export component AboutWindow inherits Window {
             TouchArea {
                 width: parent.width;
                 height: parent.height;
-                clicked => { root.open-link("https://github.com/zionyx/jenkins-tray"); }
+                clicked => { root.open-link("https://github.com/Krumbthi/jenkins_tray_rs.git"); }
             }
             Text {
                 width: parent.width;
                 height: parent.height;
-                text: "https://github.com/zionyx/jenkins-tray";
-                color: #0563c1;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-
-        Rectangle {
-            height: 22px;
-            TouchArea {
-                width: parent.width;
-                height: parent.height;
-                clicked => { root.open-link("https://github.com/aseigneurin/hudson-tray-tracker"); }
-            }
-            Text {
-                width: parent.width;
-                height: parent.height;
-                text: "https://github.com/aseigneurin/hudson-tray-tracker";
+                text: "https://github.com/Krumbthi/jenkins_tray_rs.git";
                 color: #0563c1;
                 horizontal-alignment: center;
                 vertical-alignment: center;
@@ -69,7 +52,7 @@ export component AboutWindow inherits Window {
         Rectangle { vertical-stretch: 1; }
 
         Text {
-            text: @tr("Original project author: Alexis Seigneurin");
+            text: @tr("Author: Thilo Krumbholz");
             horizontal-alignment: center;
             font-size: 11px;
         }

@@ -59,6 +59,10 @@ pub type TrayEventSender = std::sync::mpsc::Sender<TrayEvent>;
 /// Trait for platform-specific tray implementations.
 pub trait TrayBackend: Send + Sync {
     fn initialize(&mut self) -> Result<()>;
+    /// True when the tray icon is actually visible (a host is showing it).
+    /// Used by the close handler: hiding to an invisible icon would strand
+    /// the user with no way back except relaunching.
+    fn can_show_icon(&self) -> bool;
     /// Replace the tray icon (original: notifyIcon.Icon = iconsByKey[key]).
     fn update_icon(&self, status: &BuildStatus) -> Result<()>;
     /// Replace the tray tooltip (original: SetNotifyIconText).
@@ -102,6 +106,9 @@ pub struct StubTrayBackend;
 impl TrayBackend for StubTrayBackend {
     fn initialize(&mut self) -> Result<()> {
         Ok(())
+    }
+    fn can_show_icon(&self) -> bool {
+        false
     }
     fn update_icon(&self, status: &BuildStatus) -> Result<()> {
         log::info!("Tray icon: {}", status.key());
@@ -524,6 +531,11 @@ pub struct TrayHub {
 }
 
 impl TrayHub {
+    /// True when the backend's tray icon is actually visible to the user.
+    pub fn can_show_icon(&self) -> bool {
+        self.backend.can_show_icon()
+    }
+
     /// Create the tray (original: Spring object graph + UpdateNotifierStartup).
     ///
     /// A failing backend never prevents startup - the original's `NotifyIcon`

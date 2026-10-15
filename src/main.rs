@@ -2416,12 +2416,36 @@ fn main() -> Result<()> {
     // without a tray icon (WSLg) relaunching the application asks the
     // running instance to show its window (see `single_instance.rs`), so
     // hiding never strands the app. Quitting stays in the tray menu.
-    ui.window().on_close_requested(|| {
-        log::info!(
-            "Window close requested - hiding to the tray \
-             (tray menu \"Exit\" quits, relaunching re-shows the window)"
-        );
-        CloseRequestResponse::HideWindow
+    //
+    // When no tray host is actually showing the icon (e.g. WSLg with no
+    // StatusNotifierWatcher), hiding would leave no visible way back -
+    // minimize to the taskbar instead so the window stays reachable.
+    ui.window().on_close_requested({
+        let services = services.clone();
+        let ui = ui.as_weak();
+        move || {
+            let can_show_icon = services
+                .tray
+                .lock()
+                .map(|tray| tray.can_show_icon())
+                .unwrap_or(false);
+            if can_show_icon {
+                log::info!(
+                    "Window close requested - hiding to the tray \
+                     (tray menu \"Exit\" quits, relaunching re-shows the window)"
+                );
+                CloseRequestResponse::HideWindow
+            } else {
+                log::info!(
+                    "Window close requested - no tray icon visible, \
+                     minimizing to taskbar instead of hiding"
+                );
+                if let Some(ui) = ui.upgrade() {
+                    ui.window().set_minimized(true);
+                }
+                CloseRequestResponse::KeepWindowShown
+            }
+        }
     });
 
     // Relaunching the application re-shows this window (new feature; the

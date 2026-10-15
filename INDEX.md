@@ -1,6 +1,6 @@
 # Codebase Index: jenkins_tray
 
-> Generated: 2026-10-15 07:01:12 UTC | Files: 19 | Lines: 9033
+> Generated: 2026-10-15 07:26:05 UTC | Files: 19 | Lines: 9098
 > Languages: Markdown (3), Properties (1), Rust (14), TOML (1)
 
 ## Directory Structure
@@ -187,7 +187,7 @@ jenkins_tray/
 
 ## INDEX.md
 
-**Language:** Markdown | **Size:** 28.5 KB | **Lines:** 1012
+**Language:** Markdown | **Size:** 28.7 KB | **Lines:** 1022
 
 **Declarations:**
 
@@ -470,7 +470,7 @@ jenkins_tray/
 
 ## src/main.rs
 
-**Language:** Rust | **Size:** 105.5 KB | **Lines:** 2558
+**Language:** Rust | **Size:** 106.5 KB | **Lines:** 2582
 
 **Imports:**
 - `std::cell::RefCell`
@@ -765,10 +765,12 @@ jenkins_tray/
 
 ## src/tray/ksni_backend.rs
 
-**Language:** Rust | **Size:** 8.6 KB | **Lines:** 270
+**Language:** Rust | **Size:** 9.4 KB | **Lines:** 285
 
 **Imports:**
 - `std::collections::HashMap`
+- `std::sync::atomic::{AtomicBool, Ordering}`
+- `std::sync::Arc`
 - `anyhow::{Context, Result}`
 - `crate::model::BuildStatus`
 - `super::{
@@ -785,6 +787,8 @@ jenkins_tray/
 
 
 **`impl TrayBackend for KsniBackend`**
+  `fn can_show_icon(&self) -> bool`
+
   `fn initialize(&mut self) -> Result<()>`
 
   `fn update_icon(&self, status: &BuildStatus) -> Result<()>`
@@ -801,10 +805,10 @@ jenkins_tray/
 
 
 `struct SniTray`
-> Fields: `icons: Vec<ksni::Icon>`, `tooltip: String`, `menu_items: Vec<MenuItem>`, `sender: Option<TrayEventSender>`
+> Fields: `icons: Vec<ksni::Icon>`, `tooltip: String`, `menu_items: Vec<MenuItem>`, `sender: Option<TrayEventSender>`, `watcher_online: Arc<AtomicBool>`
 
 **`impl SniTray`**
-  `fn new() -> Self`
+  `fn new(watcher_online: Arc<AtomicBool>) -> Self`
 
 
 **`impl ksni::Tray for SniTray`**
@@ -839,7 +843,7 @@ jenkins_tray/
 
 ## src/tray/win32_backend.rs
 
-**Language:** Rust | **Size:** 17.0 KB | **Lines:** 467
+**Language:** Rust | **Size:** 17.1 KB | **Lines:** 471
 
 **Imports:**
 - `std::sync::atomic::{AtomicBool, Ordering}`
@@ -901,6 +905,8 @@ jenkins_tray/
 
 
 **`impl TrayBackend for Win32Backend`**
+  `fn can_show_icon(&self) -> bool`
+
   `fn initialize(&mut self) -> Result<()>`
 
   `fn update_icon(&self, status: &BuildStatus) -> Result<()>`
@@ -938,7 +944,7 @@ jenkins_tray/
 
 ## src/tray.rs
 
-**Language:** Rust | **Size:** 22.4 KB | **Lines:** 605
+**Language:** Rust | **Size:** 22.9 KB | **Lines:** 617
 
 **Imports:**
 - `std::collections::HashMap`
@@ -954,6 +960,8 @@ jenkins_tray/
 
 **`impl TrayBackend for StubTrayBackend`**
   `fn initialize(&mut self) -> Result<()>`
+
+  `fn can_show_icon(&self) -> bool`
 
   `fn update_icon(&self, status: &BuildStatus) -> Result<()>`
 
@@ -1001,6 +1009,8 @@ jenkins_tray/
 `fn truncate_tooltip(text: &str) -> String`
 
 **`impl TrayHub`**
+  `pub fn can_show_icon(&self) -> bool`
+
   `pub fn new() -> Result<Self>`
 
   `pub fn update(&mut self, config: &Configuration)`

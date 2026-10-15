@@ -111,6 +111,10 @@ impl Win32Backend {
 }
 
 impl TrayBackend for Win32Backend {
+    fn can_show_icon(&self) -> bool {
+        // Windows always has a taskbar.
+        true
+    }
     fn initialize(&mut self) -> Result<()> {
         unsafe {
             let hinstance: HINSTANCE = GetModuleHandleW(None)

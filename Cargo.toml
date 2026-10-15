@@ -2,7 +2,7 @@
 name = "jenkins_tray"
 # The port's own version (the original C# application was 1.0.5.0; update
 # checks compare it against scripts/version.properties, see app_update.rs).
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["Thilo Krumbholz"]
 description = "A Rust + Slint application"

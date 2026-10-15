@@ -9,6 +9,8 @@
 //! main.rs quits on window close instead of hiding to an invisible icon.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
@@ -25,22 +27,29 @@ pub struct KsniBackend {
     /// `None` when the session bus is missing (spawn failed); the backend
     /// then no-ops.
     handle: Option<ksni::blocking::Handle<SniTray>>,
+    /// Shared with `SniTray`'s `watcher_offline`/`watcher_online` callbacks
+    /// to track whether a tray host is currently showing the icon.
+    watcher_online: Arc<AtomicBool>,
 }
 
 impl KsniBackend {
     pub fn new() -> Self {
-        Self { handle: None }
+        Self { handle: None, watcher_online: Arc::new(AtomicBool::new(false)) }
     }
 }
 
 impl TrayBackend for KsniBackend {
+    fn can_show_icon(&self) -> bool {
+        self.watcher_online.load(Ordering::Relaxed)
+    }
+
     fn initialize(&mut self) -> Result<()> {
         use ksni::blocking::TrayMethods;
 
         // assume_sni_available(true): a missing tray host is a soft error
         // routed to `watcher_offline` instead of failing the spawn, so the
         // icon appears whenever a host shows up later.
-        let handle = SniTray::new()
+        let handle = SniTray::new(self.watcher_online.clone())
             .assume_sni_available(true)
             .spawn()
             .context("could not register the StatusNotifierItem")?;
@@ -113,10 +122,13 @@ struct SniTray {
     /// Context menu entries (original: `NotifyIcon.ContextMenuStrip`).
     menu_items: Vec<MenuItem>,
     sender: Option<TrayEventSender>,
+    /// Shared with `KsniBackend` to track whether a tray host is showing
+    /// the icon (false under WSLg / no StatusNotifierWatcher).
+    watcher_online: Arc<AtomicBool>,
 }
 
 impl SniTray {
-    fn new() -> Self {
+    fn new(watcher_online: Arc<AtomicBool>) -> Self {
         Self {
             icons: render_icons(&BuildStatus::unknown()),
             tooltip: "JenkinsTray".into(), // original: UpdateNotifierStartup
@@ -130,6 +142,7 @@ impl SniTray {
                 })
                 .collect(),
             sender: None,
+            watcher_online,
         }
     }
 }
@@ -199,6 +212,7 @@ impl ksni::Tray for SniTray {
     }
 
     fn watcher_offline(&self, reason: ksni::OfflineReason) -> bool {
+        self.watcher_online.store(false, Ordering::Relaxed);
         log::warn!(
             "Tray host (StatusNotifierWatcher) offline: {reason:?} \
              - the original keeps its icon because Windows always has a taskbar"
@@ -208,6 +222,7 @@ impl ksni::Tray for SniTray {
     }
 
     fn watcher_online(&self) {
+        self.watcher_online.store(true, Ordering::Relaxed);
         log::info!("Tray host (StatusNotifierWatcher) online");
     }
 }

@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::Result;
 use chrono::{Duration, Local, TimeZone};
-use slint::{CloseRequestResponse, ComponentHandle, ModelRc, VecModel};
+use slint::{CloseRequestResponse, ComponentHandle, Model, ModelRc, VecModel};
 
 use app_update::{ApplicationUpdateService, UpdateSource};
 use config::ConfigurationService;
@@ -39,6 +39,7 @@ mod jenkins_client;
 mod model;
 mod notifications;
 mod projects_updater;
+mod single_instance;
 mod tray;
 
 // ---------------------------------------------------------------------------
@@ -85,6 +86,17 @@ fn next_sort(current: Option<GridSort>, key: SortKey) -> Option<GridSort> {
     }
 }
 
+/// One editable entry behind the "Build with parameters" dialog (new
+/// feature): the authoritative name/value list, updated by the dialog's
+/// `param-edited` callback. `persist` is false for password parameters,
+/// whose values are never written to the configuration file.
+#[derive(Debug, Clone)]
+struct BuildParamValue {
+    name: String,
+    value: String,
+    persist: bool,
+}
+
 /// State shared between the Slint callbacks.
 #[derive(Default)]
 struct AppState {
@@ -109,10 +121,11 @@ struct AppState {
     /// Project targeted by the "Build with parameters" dialog:
     /// `(server_url, project_url)` (new feature).
     build_params_target: Option<(String, String)>,
-    /// The `(name, value)` pairs shown in the "Build with parameters"
-    /// dialog: initialized from the job's defaults when the dialog opens
-    /// and updated by its `param-edited` callback (new feature).
-    build_params: Vec<(String, String)>,
+    /// The entries shown in the "Build with parameters" dialog: initialized
+    /// from the job's defaults (or the last submitted values, see
+    /// `Configuration::last_build_parameters`) when the dialog opens and
+    /// updated by its `param-edited` callback (new feature).
+    build_params: Vec<BuildParamValue>,
 }
 
 /// Services captured by the Slint callbacks.
@@ -1152,6 +1165,47 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
         }
     });
 
+    // Keyboard row navigation of the grid (new feature; the original's
+    // WinForms grid moves the selection with the arrow keys): Up/Down skip
+    // the server group headers, clamp at both ends of the grid and fire
+    // `selection-changed` like a click does.
+    ui.on_move_selection({
+        let ui = ui.as_weak();
+        move |delta| {
+            let ui = ui.unwrap();
+            let rows = ui.get_rows();
+            let len = rows.row_count() as i32;
+            if len == 0 {
+                return;
+            }
+            // Outside the grid (or on a header) counts as "nothing
+            // selected"; an unreadable entry blocks the move.
+            let is_header = |index: i32| {
+                rows
+                    .row_data(index as usize)
+                    .map(|row| row.is_header)
+                    .unwrap_or(true)
+            };
+            let mut index = ui.get_selected_row();
+            if index < 0 || index >= len {
+                index = if delta > 0 { 0 } else { len - 1 };
+            } else {
+                index += delta;
+            }
+            // Skip headers (only adjacent when a server has no projects)
+            // while staying inside the grid; `steps` is a safety net.
+            let mut steps = 0;
+            while index >= 0 && index < len && is_header(index) && steps <= len {
+                index += delta;
+                steps += 1;
+            }
+            if index >= 0 && index < len && !is_header(index) {
+                ui.set_selected_row(index);
+                ui.invoke_selection_changed(index);
+            }
+        }
+    });
+
     // Context menu actions.
     ui.on_menu_action({
         let services = services.clone();
@@ -1222,6 +1276,16 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                     // `jenkins_files/trigger_pipeline.sh`.
                     lock_state(&services.state).build_params_target =
                         Some((server_url.clone(), project_url.clone()));
+                    // Pre-fill candidates: the values submitted the last
+                    // time for this job (new feature; `None` on the first
+                    // open or when the config cannot be read).
+                    let remembered = services
+                        .config
+                        .get_config()
+                        .ok()
+                        .and_then(|config| {
+                            config.last_build_parameters.get(&project_url).cloned()
+                        });
                     let client = services.clients.for_server(server).clone();
                     let server = server.clone();
                     let project = project.clone();
@@ -1270,9 +1334,26 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                                 // name/value list (updated by `param-edited`)
                                 // are both built on the event loop thread.
                                 let _ = slint::invoke_from_event_loop(move || {
+                                    // Last submitted values win over the
+                                    // job's defaults where they still apply
+                                    // (new feature; `can_restore` drops
+                                    // stale choices, bad booleans and any
+                                    // password entry).
+                                    let values: Vec<String> = params
+                                        .iter()
+                                        .map(|param| {
+                                            remembered
+                                                .as_ref()
+                                                .and_then(|saved| saved.get(&param.name))
+                                                .filter(|saved| param.can_restore(saved))
+                                                .cloned()
+                                                .unwrap_or_else(|| param.default.clone())
+                                        })
+                                        .collect();
                                     let rows: Vec<BuildParamRow> = params
                                         .iter()
-                                        .map(|param| BuildParamRow {
+                                        .zip(values.iter())
+                                        .map(|(param, value)| BuildParamRow {
                                             name: param.name.as_str().into(),
                                             description: param.description.as_str().into(),
                                             kind: match param.kind {
@@ -1281,7 +1362,7 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                                                 jenkins_client::ParamKind::Boolean => 2,
                                                 jenkins_client::ParamKind::Password => 3,
                                             },
-                                            value: param.default.as_str().into(),
+                                            value: value.as_str().into(),
                                             choices: ModelRc::new(VecModel::from(
                                                 param
                                                     .choices
@@ -1292,7 +1373,7 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                                             choice_index: param
                                                 .choices
                                                 .iter()
-                                                .position(|choice| *choice == param.default)
+                                                .position(|choice| *choice == *value)
                                                 .unwrap_or(0) as i32,
                                         })
                                         .collect();
@@ -1300,8 +1381,14 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                                         let mut state = lock_state(&state);
                                         state.build_params = params
                                             .iter()
-                                            .map(|param| {
-                                                (param.name.clone(), param.default.clone())
+                                            .zip(values)
+                                            .map(|(param, value)| BuildParamValue {
+                                                name: param.name.clone(),
+                                                value,
+                                                persist: !matches!(
+                                                    param.kind,
+                                                    jenkins_client::ParamKind::Password
+                                                ),
                                             })
                                             .collect();
                                     }
@@ -2014,7 +2101,7 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
         windows.build_params.on_param_edited(move |index, value| {
             let mut state = lock_state(&state);
             if let Some(entry) = state.build_params.get_mut(index as usize) {
-                entry.1 = value.to_string();
+                entry.value = value.to_string();
             }
         });
     }
@@ -2033,6 +2120,24 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                 )
             };
             if let Some((server_url, project_url)) = target {
+                // Remember the submitted values so the next dialog starts
+                // with them (new feature; passwords excluded, see
+                // `Configuration::last_build_parameters`).
+                let remembered: HashMap<String, String> = values
+                    .iter()
+                    .filter(|entry| entry.persist)
+                    .map(|entry| (entry.name.clone(), entry.value.clone()))
+                    .collect();
+                let values: Vec<(String, String)> = values
+                    .into_iter()
+                    .map(|entry| (entry.name, entry.value))
+                    .collect();
+                if let Err(e) = services
+                    .config
+                    .remember_build_parameters(&project_url, &remembered)
+                {
+                    log::warn!("Could not remember the submitted build parameters: {e}");
+                }
                 // New feature: there is no counterpart in the original; the
                 // plain counterpart is the "run-build" menu action above
                 // (`JenkinsService.SafeRunBuild`).
@@ -2196,6 +2301,24 @@ fn main() -> Result<()> {
     env_logger::init();
     log::info!("Jenkins Tray starting");
 
+    // Single instance (new feature; the original starts as often as the
+    // user likes): a second launch asks the running instance to show its
+    // window and exits - the way back in when no tray icon exists (WSLg),
+    // see `single_instance.rs`.
+    let _single_instance = match single_instance::SingleInstance::acquire() {
+        Some(instance) => instance,
+        None => {
+            if single_instance::notify_running_instance() {
+                log::info!(
+                    "Another instance is already running - asked it to show its window"
+                );
+            } else {
+                log::warn!("Another instance is already running but did not answer");
+            }
+            return Ok(());
+        }
+    };
+
     // Tokio drives the async services (original: BackgroundProcessExecutor).
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
@@ -2288,27 +2411,36 @@ fn main() -> Result<()> {
     wire_callbacks(&ui, &services, &windows);
 
     // Close to the tray (original: JenkinsTrayForm_FormClosing -> e.Cancel =
-    // true; Hide()). Windows always shows the NotifyIcon; without a tray host
-    // (e.g. under WSLg) hiding would strand the app, so closing quits instead.
-    ui.window().on_close_requested({
-        let tray = services.tray.clone();
+    // true; Hide()). Like the user's `project_tracker` client, the window
+    // always hides - the tray icon reopens it on Windows, and on hosts
+    // without a tray icon (WSLg) relaunching the application asks the
+    // running instance to show its window (see `single_instance.rs`), so
+    // hiding never strands the app. Quitting stays in the tray menu.
+    ui.window().on_close_requested(|| {
+        log::info!(
+            "Window close requested - hiding to the tray \
+             (tray menu \"Exit\" quits, relaunching re-shows the window)"
+        );
+        CloseRequestResponse::HideWindow
+    });
+
+    // Relaunching the application re-shows this window (new feature; the
+    // escape hatch on hosts without a tray icon).
+    single_instance::start_show_listener({
+        let ui = ui.as_weak();
         move || {
-            let has_tray = tray
-                .lock()
-                .map(|tray| tray.can_show_icon())
-                .unwrap_or(false);
-            log::info!("Window close requested (tray icon visible: {has_tray})");
-            if has_tray {
-                return CloseRequestResponse::HideWindow;
+            let ui = ui.clone();
+            if let Err(e) = slint::invoke_from_event_loop(move || {
+                let Some(ui) = ui.upgrade() else {
+                    return;
+                };
+                log::info!("Showing the window on request of another launch");
+                if let Err(e) = ui.show() {
+                    log::error!("Could not show the main window: {e}");
+                }
+            }) {
+                log::error!("Could not dispatch the show request: {e}");
             }
-            log::info!(
-                "No tray icon available: closing the window exits \
-                 (the original hides to the tray)"
-            );
-            if let Err(e) = slint::quit_event_loop() {
-                log::error!("Could not quit the event loop: {e}");
-            }
-            CloseRequestResponse::HideWindow
         }
     });
 
@@ -2378,7 +2510,14 @@ fn main() -> Result<()> {
     });
     services.updater.borrow_mut().start(runtime.handle());
 
-    let run_result = ui.run();
+    // Close to tray (original: the WinForms message loop keeps running for
+    // a hidden form): `Component::run()` would stop the event loop as soon
+    // as the last window is hidden - close-to-tray would kill the app (as a
+    // live test showed). Show the window explicitly and use the loop that
+    // stays alive until the tray menu's Exit action, or the update prompt's
+    // Yes, call `slint::quit_event_loop()` (new feature: close to tray,
+    // like the user's project_tracker client).
+    let run_result = ui.show().and_then(|()| slint::run_event_loop_until_quit());
 
     // --- Cleanup (original: application exit) ---
     runtime.block_on(services.updater.borrow_mut().stop());

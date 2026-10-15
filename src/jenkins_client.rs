@@ -765,6 +765,21 @@ pub struct JobParameter {
     pub choices: Vec<String>,
 }
 
+impl JobParameter {
+    /// Whether a remembered value (new feature, see
+    /// `Configuration::last_build_parameters`) may pre-fill this parameter:
+    /// a choice must still be one of the server's choices, a boolean must
+    /// be `true`/`false`, and passwords are never restored.
+    pub fn can_restore(&self, value: &str) -> bool {
+        match self.kind {
+            ParamKind::Choice => self.choices.iter().any(|choice| choice == value),
+            ParamKind::Boolean => matches!(value, "true" | "false"),
+            ParamKind::Password => false,
+            ParamKind::Text => true,
+        }
+    }
+}
+
 /// Parses the parameter definitions of a `<job>/api/json` document.
 ///
 /// Current Jenkins reports them under `property`, older versions under
@@ -1560,5 +1575,32 @@ mod tests {
         // static choices stay untouched
         assert_eq!(params[1].kind, ParamKind::Choice);
         assert_eq!(params[1].choices, ["release", "debug"]);
+    }
+
+    #[test]
+    fn restores_last_values_only_where_they_still_apply() {
+        let json = r#"{
+            "property": [
+                {"parameterDefinitions": [
+                    {"name": "QT_VERSION", "type": "ChoiceParameter",
+                     "choices": ["6.12.0", "6.9.2"]},
+                    {"name": "CLEAN_BUILD", "type": "BooleanParameter"},
+                    {"name": "TOKEN", "type": "PasswordParameter"},
+                    {"name": "BRANCH", "type": "StringParameter"}
+                ]}
+            ]
+        }"#;
+        let params = parse_build_parameters_from(&serde_json::from_str::<serde_json::Value>(json).unwrap());
+
+        // a choice that is still offered by the server
+        assert!(params[0].can_restore("6.9.2"));
+        // a dropped choice falls back to the job's default
+        assert!(!params[0].can_restore("6.6.6"));
+        // booleans must be parseable, passwords are never restored
+        assert!(params[1].can_restore("false"));
+        assert!(!params[1].can_restore("yes"));
+        assert!(!params[2].can_restore("hunter2"));
+        // text takes anything, including an empty value the user cleared
+        assert!(params[3].can_restore(""));
     }
 }

@@ -3,7 +3,7 @@
 //! Port of C# `BusinessComponents/ApplicationUpdateService.cs` and
 //! `Utils/ApplicationUpdateHandler.cs`: a timer (first run 5 seconds after
 //! start-up, then hourly) plus the manual toolbar check download
-//! `scripts/version.properties` from the original project's repository and
+//! `scripts/version.properties` from this project's repository and
 //! compare its `version.number` against this build's version. When a newer
 //! version exists the [`ApplicationUpdateService::on_new_version`] callback
 //! fires, which shows the Yes/No prompt; accepting opens the installer page
@@ -21,10 +21,10 @@
 //! - `PropertiesFile.ReadProperties` supports the full Java properties
 //!   syntax; the port parses plain `key=value` / `key:value` lines, which is
 //!   all the feed contains.
-//! - Update checks are disabled while the port has no update feed of its own
-//!   (see [`UPDATE_FEED_AVAILABLE`]): the original project's feed advertises
-//!   the original C# application, which would be offered as an "update" to
-//!   this fork.
+//! - The feed is this repository's own `scripts/version.properties` (the
+//!   original project's feed advertises the original C# application, which
+//!   would be offered as an "update" to this fork); every check can be
+//!   hard-disabled again with [`UPDATE_FEED_AVAILABLE`].
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -35,20 +35,22 @@ use anyhow::{bail, Context, Result};
 
 use crate::config::ConfigurationService;
 
-/// Update feed (original: `ApplicationUpdateService.URL`). Not contacted
-/// while [`UPDATE_FEED_AVAILABLE`] is `false`.
-const URL: &str =
-    "https://raw.githubusercontent.com/zionyx/jenkins-tray/master/scripts/version.properties";
+/// Update feed (original: `ApplicationUpdateService.URL`, pointed at this
+/// repository's own feed - the original C# project's feed is *not* used,
+/// see [`UPDATE_FEED_AVAILABLE`]).
+/// Update feed URL - GitHub raw URL for this repo's version.properties.
+/// When pushing a release, update scripts/version.properties and push to master.
+const URL: &str = "https://raw.githubusercontent.com/Krumbthi/jenkins_tray_rs/master/scripts/version.properties";
 
-/// The port does not publish an update feed yet, so every check (startup,
-/// timer and the manual toolbar action) is skipped with a log line.
+/// Kill switch for every update check (startup, timer and the manual
+/// toolbar action); each call site logs one line and skips the check.
 ///
-/// The original project's feed ([`URL`]) advertises the original C#
-/// application's version (`1.0.5.0`); with the port carrying its own version
-/// (`0.2.0.0`) it would always be offered as an "update", pointing users at
-/// the C# app's installer. Set to `true` once the port serves its own
-/// `version.properties` (original: the C# app always checks its own feed).
-const UPDATE_FEED_AVAILABLE: bool = false;
+/// The feed ([`URL`]) is this repository's own `scripts/version.properties`,
+/// so with the flag at `true` the checks run like the original C# app's
+/// (`DoCheckForUpdates`). Set to `false` to hard-disable them again (the
+/// port's state before the feed existed: the original project's feed would
+/// advertise the C# application as an "update").
+const UPDATE_FEED_AVAILABLE: bool = true;
 
 /// 5 seconds delay for the 1st check on application start up
 /// (original: `DEFAULT_UPDATE_DELAY`).
@@ -170,7 +172,7 @@ impl ApplicationUpdateService {
     /// `EnableTimer(GeneralSettings.CheckForUpdates)`).
     pub fn initialize(self: Arc<Self>) {
         if !UPDATE_FEED_AVAILABLE {
-            log::info!("Update checks disabled: this port has no update feed yet");
+            log::info!("Update checks disabled (UPDATE_FEED_AVAILABLE is off)");
             return;
         }
         let check_for_updates = match self.config.get_config() {
@@ -196,7 +198,7 @@ impl ApplicationUpdateService {
     /// initial delay like `Timer.Change(DEFAULT_UPDATE_DELAY, ...)`.
     pub fn enable_timer(self: Arc<Self>, enable: bool) {
         if enable && !UPDATE_FEED_AVAILABLE {
-            log::info!("Scheduled update checks disabled: this port has no update feed yet");
+            log::info!("Scheduled update checks disabled (UPDATE_FEED_AVAILABLE is off)");
             return;
         }
         let was_enabled = self.timer_enabled.swap(enable, Ordering::SeqCst);
@@ -245,7 +247,7 @@ impl ApplicationUpdateService {
         if !UPDATE_FEED_AVAILABLE {
             // The manual action still answers "No update available." below
             // (original: DoCheckForUpdates hits the C# project's feed).
-            log::info!("Update check from {source} skipped: this port has no update feed yet");
+            log::info!("Update check from {source} skipped (UPDATE_FEED_AVAILABLE is off)");
             return Ok(false);
         }
         let check_for_updates = match self.config.get_config() {

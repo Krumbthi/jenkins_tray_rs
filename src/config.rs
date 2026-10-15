@@ -50,6 +50,25 @@ impl ConfigurationService {
         configuration::save_configuration(&snapshot)
     }
 
+    /// Remembers the parameter values submitted for a job, so the next
+    /// "Build with parameters" dialog starts with them (new feature; the
+    /// original has no parameter dialog). An empty map forgets the job.
+    pub fn remember_build_parameters(
+        &self,
+        job_url: &str,
+        values: &std::collections::HashMap<String, String>,
+    ) -> anyhow::Result<()> {
+        self.mutate(|config| {
+            if values.is_empty() {
+                config.last_build_parameters.remove(job_url);
+            } else {
+                config
+                    .last_build_parameters
+                    .insert(job_url.to_string(), values.clone());
+            }
+        })
+    }
+
     /// Add a new Jenkins server (original: ConfigurationService.AddServer).
     pub fn add_server(
         &self,

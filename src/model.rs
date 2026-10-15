@@ -411,6 +411,12 @@ pub struct Configuration {
     pub notification_settings: NotificationSettings,
     /// General application settings
     pub general_settings: GeneralSettings,
+    /// Last submitted parameter values per job URL, so the "Build with
+    /// parameters" dialog can pre-fill the last choices (new feature; the
+    /// original has no parameter dialog). Password parameters are never
+    /// stored.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub last_build_parameters: HashMap<String, HashMap<String, String>>,
 }
 
 /// Global notification settings.

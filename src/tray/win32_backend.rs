@@ -268,11 +268,6 @@ impl TrayBackend for Win32Backend {
         *self.ctx.sender.lock().unwrap_or_else(|e| e.into_inner()) = Some(sender);
     }
 
-    fn can_show_icon(&self) -> bool {
-        // Windows always has a taskbar; the icon exists iff NIM_ADD worked.
-        self.added.load(Ordering::SeqCst)
-    }
-
     fn exit(&self) -> Result<()> {
         if !self.added.swap(false, Ordering::SeqCst) {
             return Ok(());

@@ -23,7 +23,7 @@ const ICON_SIZES: [u32; 2] = [24, 48];
 
 pub struct KsniBackend {
     /// `None` when the session bus is missing (spawn failed); the backend
-    /// then no-ops and `can_show_icon` stays false.
+    /// then no-ops.
     handle: Option<ksni::blocking::Handle<SniTray>>,
 }
 
@@ -90,12 +90,6 @@ impl TrayBackend for KsniBackend {
         } else {
             log::debug!("Tray events disabled (no tray backend)");
         }
-    }
-
-    fn can_show_icon(&self) -> bool {
-        // ksni registers its item either way; it is only *rendered* while a
-        // StatusNotifierWatcher owns its well-known bus name.
-        self.handle.is_some() && watcher_on_bus()
     }
 
     fn exit(&self) -> Result<()> {
@@ -241,24 +235,6 @@ fn render_icons(status: &BuildStatus) -> Vec<ksni::Icon> {
 // ---------------------------------------------------------------------------
 // D-Bus helpers
 // ---------------------------------------------------------------------------
-
-/// Whether a tray host owns `org.kde.StatusNotifierWatcher` right now.
-fn watcher_on_bus() -> bool {
-    let Ok(connection) = zbus::blocking::Connection::session() else {
-        return false;
-    };
-    connection
-        .call_method(
-            Some("org.freedesktop.DBus"),
-            "/org/freedesktop/DBus",
-            Some("org.freedesktop.DBus"),
-            "NameHasOwner",
-            &"org.kde.StatusNotifierWatcher",
-        )
-        .ok()
-        .and_then(|reply| reply.body().deserialize::<bool>().ok())
-        .unwrap_or(false)
-}
 
 /// `org.freedesktop.Notifications.Notify` (original: `ShowBalloonTip`).
 fn notify(title: &str, message: &str, kind: NotificationKind) -> Result<()> {

@@ -9,8 +9,9 @@
 //!
 //! The Linux tray is opportunistic only (Windows is the primary target per
 //! the original app): without a StatusNotifierWatcher - e.g. under WSLg -
-//! no icon is shown and closing the window exits instead of hiding to a
-//! tray, so the app is never stranded.
+//! no icon is shown, so reopening the window falls back to relaunching the
+//! application, which asks the running instance to show it (see
+//! [`crate::single_instance`]).
 
 use std::collections::HashMap;
 
@@ -72,11 +73,6 @@ pub trait TrayBackend: Send + Sync {
     fn set_context_menu(&self, items: Vec<MenuItem>) -> Result<()>;
     /// Delivers tray clicks/menu selections to the UI thread.
     fn set_event_sender(&mut self, sender: TrayEventSender);
-    /// Whether a tray icon is actually visible right now. The main window uses
-    /// it on close: with an icon the window hides to the tray (original
-    /// `JenkinsTrayForm_FormClosing`), without one closing quits the app so
-    /// the user is never stranded without a way back in.
-    fn can_show_icon(&self) -> bool;
     fn exit(&self) -> Result<()>;
 }
 
@@ -126,9 +122,6 @@ impl TrayBackend for StubTrayBackend {
         // No tray to click: drop the sender (original: no NotifyIcon either
         // when the backend is a stub).
         drop(sender);
-    }
-    fn can_show_icon(&self) -> bool {
-        false
     }
     fn exit(&self) -> Result<()> {
         Ok(())
@@ -569,11 +562,6 @@ impl TrayHub {
     /// event handlers wired in `TrayNotifier.Initialize`).
     pub fn set_event_sender(&mut self, sender: TrayEventSender) {
         self.backend.set_event_sender(sender);
-    }
-
-    /// Whether a tray icon is visible right now (see [`TrayBackend::can_show_icon`]).
-    pub fn can_show_icon(&self) -> bool {
-        self.backend.can_show_icon()
     }
 }
 

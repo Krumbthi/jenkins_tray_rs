@@ -1,7 +1,7 @@
 # Codebase Index: jenkins_tray
 
-> Generated: 2026-10-13 11:38:48 UTC | Files: 17 | Lines: 8654
-> Languages: Markdown (3), Rust (13), TOML (1)
+> Generated: 2026-10-15 07:01:12 UTC | Files: 19 | Lines: 9033
+> Languages: Markdown (3), Properties (1), Rust (14), TOML (1)
 
 ## Directory Structure
 
@@ -12,6 +12,8 @@ jenkins_tray/
   PORT_INSTRUCTIONS.md
   README.md
   build.rs
+  scripts/
+    version.properties
   src/
     app_update.rs
     config/
@@ -23,6 +25,7 @@ jenkins_tray/
     model.rs
     notifications.rs
     projects_updater.rs
+    single_instance.rs
     tray/
       ksni_backend.rs
       win32_backend.rs
@@ -56,6 +59,9 @@ jenkins_tray/
 - `## About`
 - `## Usage`
 - `## Logging`
+
+**scripts/version.properties**
+- `version.*`
 
 **src/app_update.rs**
 - `pub enum UpdateSource`
@@ -131,6 +137,11 @@ jenkins_tray/
 - `pub type ProjectsUpdatedHandler = Arc<dyn Fn() + Send + Sync>`
 - `pub struct ProjectsUpdateService`
 
+**src/single_instance.rs**
+- `pub enum SingleInstance`
+- `pub fn notify_running_instance() -> bool`
+- `pub fn start_show_listener(on_show: impl Fn() + Send + Sync + 'static)`
+
 **src/tray/ksni_backend.rs**
 - `pub struct KsniBackend`
 
@@ -155,7 +166,7 @@ jenkins_tray/
 
 ## Cargo.toml
 
-**Language:** TOML | **Size:** 1.7 KB | **Lines:** 50
+**Language:** TOML | **Size:** 1.9 KB | **Lines:** 53
 
 **Imports:**
 - `slint`
@@ -168,7 +179,7 @@ jenkins_tray/
 - `env_logger`
 - `chrono`
 - `roxmltree`
-- *... and 1 more imports*
+- *... and 2 more imports*
 
 **Declarations:**
 
@@ -176,7 +187,7 @@ jenkins_tray/
 
 ## INDEX.md
 
-**Language:** Markdown | **Size:** 27.5 KB | **Lines:** 967
+**Language:** Markdown | **Size:** 28.5 KB | **Lines:** 1012
 
 **Declarations:**
 
@@ -208,9 +219,17 @@ jenkins_tray/
 
 ---
 
+## scripts/version.properties
+
+**Language:** Properties | **Size:** 477 B | **Lines:** 9
+
+**Declarations:**
+
+---
+
 ## src/app_update.rs
 
-**Language:** Rust | **Size:** 16.4 KB | **Lines:** 411
+**Language:** Rust | **Size:** 16.6 KB | **Lines:** 413
 
 **Imports:**
 - `std::collections::HashMap`
@@ -222,9 +241,9 @@ jenkins_tray/
 
 **Declarations:**
 
-`const URL: &str = "https://raw.githubusercontent.com/zionyx/jenkins-tray/master/scripts/version.properties"`
+`const URL: &str = "https://raw.githubusercontent.com/Krumbthi/jenkins_tray_rs/master/scripts/version.properties"`
 
-`const UPDATE_FEED_AVAILABLE: bool = false`
+`const UPDATE_FEED_AVAILABLE: bool = true`
 
 `const UPDATE_DELAY: Duration = Duration::from_secs(5)`
 
@@ -276,7 +295,7 @@ jenkins_tray/
 
 ## src/config/configuration.rs
 
-**Language:** Rust | **Size:** 6.8 KB | **Lines:** 177
+**Language:** Rust | **Size:** 8.1 KB | **Lines:** 207
 
 **Declarations:**
 
@@ -294,7 +313,7 @@ jenkins_tray/
 
 ## src/config.rs
 
-**Language:** Rust | **Size:** 11.4 KB | **Lines:** 305
+**Language:** Rust | **Size:** 12.0 KB | **Lines:** 324
 
 **Imports:**
 - `std::sync::RwLock`
@@ -312,6 +331,8 @@ jenkins_tray/
   `pub fn save(&self) -> anyhow::Result<()>`
 
   `fn mutate(&self, f: impl FnOnce(&mut Configuration)) -> anyhow::Result<()>`
+
+  `pub fn remember_build_parameters( &self, job_url: &str, values: &std::collections::HashMap<String, String>, ) -> anyhow::Result<()>`
 
   `pub fn add_server( &self, url: &str, display_name: &str, username: Option<&str>, password: Option<&str>, ignore_untrusted_certificate: bool, ) -> anyhow::Result<Server>`
 
@@ -364,7 +385,7 @@ jenkins_tray/
 
 ## src/jenkins_client.rs
 
-**Language:** Rust | **Size:** 62.5 KB | **Lines:** 1564
+**Language:** Rust | **Size:** 64.3 KB | **Lines:** 1606
 
 **Imports:**
 - `std::collections::{HashMap, HashSet}`
@@ -421,6 +442,10 @@ jenkins_tray/
 
 `fn fill_in_claim_details(root: Node<'_, '_>) -> Option<ClaimDetails>`
 
+**`impl JobParameter`**
+  `pub fn can_restore(&self, value: &str) -> bool`
+
+
 `fn parse_build_parameters_from(root: &serde_json::Value) -> Vec<JobParameter>`
 
 `fn definitions(root: &serde_json::Value) -> Vec<&serde_json::Value>`
@@ -445,7 +470,7 @@ jenkins_tray/
 
 ## src/main.rs
 
-**Language:** Rust | **Size:** 98.9 KB | **Lines:** 2419
+**Language:** Rust | **Size:** 105.5 KB | **Lines:** 2558
 
 **Imports:**
 - `std::cell::RefCell`
@@ -454,7 +479,7 @@ jenkins_tray/
 - `std::sync::{Arc, Mutex, MutexGuard}`
 - `anyhow::Result`
 - `chrono::{Duration, Local, TimeZone}`
-- `slint::{CloseRequestResponse, ComponentHandle, ModelRc, VecModel}`
+- `slint::{CloseRequestResponse, ComponentHandle, Model, ModelRc, VecModel}`
 - `app_update::{ApplicationUpdateService, UpdateSource}`
 - `config::ConfigurationService`
 - `model::{BuildCauseEnum, BuildDetails, BuildStatusEnum, Configuration, Project, Server}`
@@ -476,6 +501,8 @@ jenkins_tray/
 
 `mod projects_updater`
 
+`mod single_instance`
+
 `mod tray`
 
 `struct EditServerContext`
@@ -489,8 +516,11 @@ jenkins_tray/
 
 `fn next_sort(current: Option<GridSort>, key: SortKey) -> Option<GridSort>`
 
+`struct BuildParamValue`
+> Fields: `name: String`, `value: String`, `persist: bool`
+
 `struct AppState`
-> Fields: `row_keys: Vec<Option<(String, String)>>`, `sort: Option<GridSort>`, `settings_projects: HashMap<String, Vec<Project>>`, `edit_server: EditServerContext`, `auth_token_target: Option<(String, String)>`, `claim_target: Option<(String, String, u32)>`, `build_params_target: Option<(String, String)>`, `build_params: Vec<(String, String)>`
+> Fields: `row_keys: Vec<Option<(String, String)>>`, `sort: Option<GridSort>`, `settings_projects: HashMap<String, Vec<Project>>`, `edit_server: EditServerContext`, `auth_token_target: Option<(String, String)>`, `claim_target: Option<(String, String, u32)>`, `build_params_target: Option<(String, String)>`, `build_params: Vec<BuildParamValue>`
 
 `struct Services`
 > Fields: `config: Arc<ConfigurationService>`, `notifications: Arc<NotificationService>`, `clients: jenkins_client::Clients`, `updater: Rc<RefCell<ProjectsUpdateService>>`, `state: Arc<Mutex<AppState>>`, `tray: Arc<Mutex<TrayHub>>`, `app_update: Arc<ApplicationUpdateService>`, `runtime: tokio::runtime::Handle`
@@ -576,7 +606,7 @@ jenkins_tray/
 
 ## src/model.rs
 
-**Language:** Rust | **Size:** 17.6 KB | **Lines:** 460
+**Language:** Rust | **Size:** 17.9 KB | **Lines:** 466
 
 **Imports:**
 - `serde::{Deserialize, Serialize}`
@@ -708,9 +738,34 @@ jenkins_tray/
 
 ---
 
+## src/single_instance.rs
+
+**Language:** Rust | **Size:** 4.6 KB | **Lines:** 125
+
+**Imports:**
+- `std::io::{BufRead, BufReader, Write}`
+- `std::net::{Ipv4Addr, TcpListener, TcpStream}`
+- `std::path::PathBuf`
+- `std::time::Duration`
+- `fs2::FileExt`
+
+**Declarations:**
+
+`const SHOW_PORT: u16 = 39265`
+
+`const SHOW_COMMAND: &str = "show"`
+
+**`impl SingleInstance`**
+  `pub fn acquire() -> Option<Self>`
+
+
+`fn lock_file_path() -> PathBuf`
+
+---
+
 ## src/tray/ksni_backend.rs
 
-**Language:** Rust | **Size:** 9.4 KB | **Lines:** 294
+**Language:** Rust | **Size:** 8.6 KB | **Lines:** 270
 
 **Imports:**
 - `std::collections::HashMap`
@@ -741,8 +796,6 @@ jenkins_tray/
   `fn set_context_menu(&self, items: Vec<MenuItem>) -> Result<()>`
 
   `fn set_event_sender(&mut self, sender: TrayEventSender)`
-
-  `fn can_show_icon(&self) -> bool`
 
   `fn exit(&self) -> Result<()>`
 
@@ -780,15 +833,13 @@ jenkins_tray/
 
 `fn render_icons(status: &BuildStatus) -> Vec<ksni::Icon>`
 
-`fn watcher_on_bus() -> bool`
-
 `fn notify(title: &str, message: &str, kind: NotificationKind) -> Result<()>`
 
 ---
 
 ## src/tray/win32_backend.rs
 
-**Language:** Rust | **Size:** 17.2 KB | **Lines:** 472
+**Language:** Rust | **Size:** 17.0 KB | **Lines:** 467
 
 **Imports:**
 - `std::sync::atomic::{AtomicBool, Ordering}`
@@ -862,8 +913,6 @@ jenkins_tray/
 
   `fn set_event_sender(&mut self, sender: TrayEventSender)`
 
-  `fn can_show_icon(&self) -> bool`
-
   `fn exit(&self) -> Result<()>`
 
 
@@ -889,7 +938,7 @@ jenkins_tray/
 
 ## src/tray.rs
 
-**Language:** Rust | **Size:** 22.9 KB | **Lines:** 617
+**Language:** Rust | **Size:** 22.4 KB | **Lines:** 605
 
 **Imports:**
 - `std::collections::HashMap`
@@ -915,8 +964,6 @@ jenkins_tray/
   `fn set_context_menu(&self, _items: Vec<MenuItem>) -> Result<()>`
 
   `fn set_event_sender(&mut self, sender: TrayEventSender)`
-
-  `fn can_show_icon(&self) -> bool`
 
   `fn exit(&self) -> Result<()>`
 
@@ -959,8 +1006,6 @@ jenkins_tray/
   `pub fn update(&mut self, config: &Configuration)`
 
   `pub fn set_event_sender(&mut self, sender: TrayEventSender)`
-
-  `pub fn can_show_icon(&self) -> bool`
 
 
 `mod tests`

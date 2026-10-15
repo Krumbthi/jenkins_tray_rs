@@ -1,7 +1,7 @@
 [package]
 name = "jenkins_tray"
-# The port's own version (the original C# application was 1.0.5.0; the update
-# checks are disabled, see app_update.rs - this port has no update feed yet).
+# The port's own version (the original C# application was 1.0.5.0; update
+# checks compare it against scripts/version.properties, see app_update.rs).
 version = "0.2.0"
 edition = "2024"
 authors = ["Thilo Krumbholz"]
@@ -20,6 +20,9 @@ serde_json = "1.0"
 env_logger = "0.10"
 chrono = "0.4"
 roxmltree = "0.21.1"
+# Single-instance file lock, like the user's project_tracker client: a
+# second launch asks the running instance to show its window instead.
+fs2 = "0.4"
 
 # Linux tray: pure-Rust StatusNotifierItem (icon/menu/clicks) + the
 # freedesktop Notifications bus (balloons). Both degrade to logging when no

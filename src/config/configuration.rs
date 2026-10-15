@@ -174,4 +174,34 @@ mod tests {
         let config = normalize(config);
         assert_eq!(config.general_settings.refresh_interval_in_seconds, 30);
     }
+
+    /// The remembered build parameters (new feature) survive a save/load
+    /// round trip, an empty map stays out of the file (a config written by
+    /// a build that never accepted a parameterized dialog stays
+    /// byte-identical), and configs without the field still parse.
+    #[test]
+    fn remembered_build_parameters_round_trip() {
+        let mut config = crate::model::Configuration::default();
+        config.last_build_parameters.insert(
+            "http://jenkins/job/SpArcfire_CMake/".to_string(),
+            [("QT_VERSION".to_string(), "6.9.2".to_string())]
+                .into_iter()
+                .collect(),
+        );
+
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("last_build_parameters"));
+        let back: crate::model::Configuration = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, config);
+
+        // An empty map is not serialized.
+        let empty = crate::model::Configuration::default();
+        let json = serde_json::to_string(&empty).unwrap();
+        assert!(!json.contains("last_build_parameters"));
+
+        // An older config without the field parses with an empty map.
+        let old: crate::model::Configuration =
+            serde_json::from_str(r#"{"servers":[]}"#).unwrap();
+        assert!(old.last_build_parameters.is_empty());
+    }
 }

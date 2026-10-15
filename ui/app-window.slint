@@ -3,8 +3,8 @@
 //! Migrated from the original C# `JenkinsTray.UI.MainForm`:
 //! toolbar (Settings / Refresh / Check for updates / About - no Exit
 //! button, removed on request; exiting stays in the tray menu),
-//! projects grid grouped by server, context menu, F5 refresh and the
-//! "Last check:" status bar.
+//! projects grid grouped by server, context menu, F5 refresh plus arrow
+//! key / Return / Menu key navigation and the "Last check:" status bar.
 
 import { Button, ListView } from "std-widgets.slint";
 import { ProjectRow, Ui, TableHeader, ProjectRowView } from "common.slint";
@@ -17,6 +17,8 @@ import { AuthTokenWindow, BuildParamsWindow, ClaimBuildWindow, MessageBoxWindow 
 export { SettingsWindow, EditServerWindow, AboutWindow, AuthTokenWindow, BuildParamsWindow, ClaimBuildWindow, MessageBoxWindow }
 
 export component AppWindow inherits Window {
+    // Application icon (from the original JenkinsTray.ico).
+    icon: @image-url("../assets/icon_64.png");
     // original: string.Format("{0} v{1}.{2}.{3}", ProductName, FileMajor,
     // FileMinor, FileBuild) - generated from CARGO_PKG_VERSION by build.rs.
     title: AppVersion.window-title();
@@ -50,6 +52,14 @@ export component AppWindow inherits Window {
     callback activate-project();
     callback menu-action(action: string);
     callback selection-changed(row-index: int);
+    // Keyboard row navigation (new feature; the original's WinForms grid
+    // moves the selection with the arrow keys): computed in Rust (it needs
+    // loops, which Slint functions do not have) - server group headers are
+    // skipped, the selection never leaves the grid, and the same
+    // `selection-changed` callback fires as on a click, so the menu
+    // checkmarks stay in sync. The ListView does not scroll along yet: the
+    // selected row may stay out of view in long lists.
+    callback move-selection(delta: int);
     callback sort-changed(column: int);
 
     // Selection state used to enable/disable the context menu items
@@ -60,18 +70,10 @@ export component AppWindow inherits Window {
     property <bool> sel-not-ok: has-selection && rows[selected-row].ack-status-eligible;
     property <bool> sel-claimable: integrate-claim && has-selection && rows[selected-row].claim-eligible;
 
-    // F5 refresh (original: MainForm_KeyUp).
-    forward-focus: key-scope;
-    key-scope := FocusScope {
-        key-pressed(event) => {
-            if (event.text == Key.F5) {
-                root.refresh-projects();
-                accept
-            } else {
-                reject
-            }
-        }
-    }
+    // F5 refresh (original: MainForm_KeyUp); the arrows, Return and the
+    // Menu key are handled by `grid-key` inside the grid below - focus
+    // must live within the ContextMenuArea for the Menu key to reach it.
+    forward-focus: grid-key;
 
     VerticalLayout {
         // --- Toolbar (original: DevExpress main menu bar) ---
@@ -137,32 +139,59 @@ export component AppWindow inherits Window {
             // programmatically through `show()` at the pointer position
             // (converted from window coordinates via `absolute-position`).
             project-menu := ContextMenuArea {
-                ListView {
-                    for item[i] in root.rows: delegate := ProjectRowView {
-                        project-row: item;
-                        show-claim-columns: root.integrate-claim;
-                        selected: i == root.selected-row && !item.is-header;
-                        clicked => {
-                            root.selected-row = i;
-                            root.selection-changed(i);
-                        }
-                        double-clicked => {
-                            root.selected-row = i;
-                            root.selection-changed(i);
+                // Keyboard focus for the grid. It must sit *within* the
+                // ContextMenuArea: the area shows the row menu on the Menu
+                // key only while a FocusScope inside it has focus, and key
+                // events bubble up from the focused element - rejected keys
+                // (Menu, Tab) reach the ContextMenuArea / focus traversal.
+                // Clicking a row focuses it as well (focus-on-click).
+                grid-key := FocusScope {
+                    key-pressed(event) => {
+                        if (event.text == Key.F5) {
+                            root.refresh-projects();
+                            accept
+                        } else if (event.text == Key.DownArrow) {
+                            root.move-selection(1);
+                            accept
+                        } else if (event.text == Key.UpArrow) {
+                            root.move-selection(-1);
+                            accept
+                        } else if (event.text == Key.Return && root.has-selection) {
+                            // original: projectsGridView_DoubleClick
                             root.activate-project();
+                            accept
+                        } else {
+                            reject
                         }
-                        context-menu-requested(pos) => {
-                            // WinForms/DevExpress grids select the row under
-                            // the cursor before showing the context menu, so
-                            // the menu actions target the right-clicked row.
-                            root.selected-row = i;
-                            root.selection-changed(i);
-                            project-menu.show({
-                                x: delegate.absolute-position.x
-                                    - grid-area.absolute-position.x + pos.x,
-                                y: delegate.absolute-position.y
-                                    - grid-area.absolute-position.y + pos.y,
-                            });
+                    }
+
+                    ListView {
+                        for item[i] in root.rows: delegate := ProjectRowView {
+                            project-row: item;
+                            show-claim-columns: root.integrate-claim;
+                            selected: i == root.selected-row && !item.is-header;
+                            clicked => {
+                                root.selected-row = i;
+                                root.selection-changed(i);
+                            }
+                            double-clicked => {
+                                root.selected-row = i;
+                                root.selection-changed(i);
+                                root.activate-project();
+                            }
+                            context-menu-requested(pos) => {
+                                // WinForms/DevExpress grids select the row under
+                                // the cursor before showing the context menu, so
+                                // the menu actions target the right-clicked row.
+                                root.selected-row = i;
+                                root.selection-changed(i);
+                                project-menu.show({
+                                    x: delegate.absolute-position.x
+                                        - grid-area.absolute-position.x + pos.x,
+                                    y: delegate.absolute-position.y
+                                        - grid-area.absolute-position.y + pos.y,
+                                });
+                            }
                         }
                     }
                 }

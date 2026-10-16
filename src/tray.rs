@@ -2,10 +2,16 @@
 //!
 //! Port of C# `UI/TrayNotifier.cs`: the worst-status computation, the tooltip
 //! text, the error/regression balloons and the acknowledged-status store live
-//! in [`TrayNotifierState`]; the platform rendering goes through
-//! [`TrayBackend`] - a StatusNotifierItem ([`ksni`]) on Linux, a
-//! `Shell_NotifyIconW` backend on Windows ([`win32_backend`]) and
-//! [`StubTrayBackend`] elsewhere, where every call degrades to logging.
+//! in [`TrayNotifierState`].
+//!
+//! The *visible* tray icon is Slint's built-in `SystemTrayIcon` (the same
+//! mechanism the user's project_tracker client uses - on Windows it wraps
+//! `Shell_NotifyIconW`, on Linux a StatusNotifierItem): see the `TrayIcon`
+//! component and the wiring in `main.rs`. This module therefore only keeps the
+//! notifier *state* plus a presentation backend: [`ksni_backend`] on Linux,
+//! where no Slint tray simplification is wanted, and [`StubTrayBackend`]
+//! everywhere else (on Windows every icon/tooltip/balloon call degrades to
+//! logging, because Slint draws the icon).
 //!
 //! The Linux tray is opportunistic only (Windows is the primary target per
 //! the original app): without a StatusNotifierWatcher - e.g. under WSLg -
@@ -22,8 +28,12 @@ use crate::notifications::TrayNotifier;
 
 #[cfg(all(unix, not(target_os = "macos")))]
 mod ksni_backend;
-#[cfg(windows)]
-mod win32_backend;
+// The Windows presentation backend is Slint's built-in `SystemTrayIcon` (the
+// same mechanism as project_tracker), so the old hand-rolled
+// `Shell_NotifyIconW` module is no longer compiled. The file is kept for
+// reference only; it is dead code and can be deleted.
+// #[cfg(windows)]
+// mod win32_backend;
 
 /// Maximum tooltip length (original: TrayNotifier.MAX_TOOLTIP_LENGTH).
 pub const MAX_TOOLTIP_LENGTH: usize = 127;
@@ -59,9 +69,12 @@ pub type TrayEventSender = std::sync::mpsc::Sender<TrayEvent>;
 /// Trait for platform-specific tray implementations.
 pub trait TrayBackend: Send + Sync {
     fn initialize(&mut self) -> Result<()>;
-    /// True when the tray icon is actually visible (a host is showing it).
-    /// Used by the close handler: hiding to an invisible icon would strand
-    /// the user with no way back except relaunching.
+    /// True when the backend's tray icon is actually visible (a host is
+    /// showing it). Retained for the platform backends and future close
+    /// handling; on Windows the visible icon is Slint's `SystemTrayIcon`, so
+    /// the close handler hides unconditionally (the tray keeps the event loop
+    /// alive) - exactly like project_tracker.
+    #[allow(dead_code)]
     fn can_show_icon(&self) -> bool;
     /// Replace the tray icon (original: notifyIcon.Icon = iconsByKey[key]).
     fn update_icon(&self, status: &BuildStatus) -> Result<()>;
@@ -144,9 +157,9 @@ impl TrayNotifier for StubTrayBackend {
 
 /// The platform tray backend (original: `NotifyIcon` in `TrayNotifier`).
 ///
-/// Linux gets a StatusNotifierItem ([`ksni_backend`]), Windows a
-/// `Shell_NotifyIconW` implementation ([`win32_backend`]); everything else
-/// falls back to the logging stub.
+/// Linux gets a StatusNotifierItem ([`ksni_backend`]); on Windows (and
+/// elsewhere) this is the logging stub, because the visible icon there is
+/// Slint's `SystemTrayIcon` - the same mechanism as project_tracker.
 pub fn create_tray_backend() -> Box<dyn TrayBackend> {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -154,7 +167,7 @@ pub fn create_tray_backend() -> Box<dyn TrayBackend> {
     }
     #[cfg(windows)]
     {
-        Box::new(win32_backend::Win32Backend::new())
+        Box::new(StubTrayBackend)
     }
     #[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
     {
@@ -532,6 +545,7 @@ pub struct TrayHub {
 
 impl TrayHub {
     /// True when the backend's tray icon is actually visible to the user.
+    #[allow(dead_code)]
     pub fn can_show_icon(&self) -> bool {
         self.backend.can_show_icon()
     }

@@ -1,7 +1,7 @@
 # Codebase Index: jenkins_tray
 
-> Generated: 2026-10-15 07:26:05 UTC | Files: 19 | Lines: 9098
-> Languages: Markdown (3), Properties (1), Rust (14), TOML (1)
+> Generated: 2026-10-16 12:50:06 UTC | Files: 20 | Lines: 9174
+> Languages: Markdown (3), Properties (1), Rust (14), TOML (1), XML (1)
 
 ## Directory Structure
 
@@ -30,6 +30,8 @@ jenkins_tray/
       ksni_backend.rs
       win32_backend.rs
     tray.rs
+  ui/
+    tray.svg
 ```
 
 ---
@@ -162,11 +164,16 @@ jenkins_tray/
 - `pub struct TrayNotifierState`
 - `pub struct TrayHub`
 
+**ui/tray.svg**
+- `<svg>`
+- `<circle>`
+- `<line>`
+
 ---
 
 ## Cargo.toml
 
-**Language:** TOML | **Size:** 1.9 KB | **Lines:** 53
+**Language:** TOML | **Size:** 1.9 KB | **Lines:** 52
 
 **Imports:**
 - `slint`
@@ -187,7 +194,7 @@ jenkins_tray/
 
 ## INDEX.md
 
-**Language:** Markdown | **Size:** 28.7 KB | **Lines:** 1022
+**Language:** Markdown | **Size:** 28.9 KB | **Lines:** 1035
 
 **Declarations:**
 
@@ -470,7 +477,7 @@ jenkins_tray/
 
 ## src/main.rs
 
-**Language:** Rust | **Size:** 106.5 KB | **Lines:** 2582
+**Language:** Rust | **Size:** 108.1 KB | **Lines:** 2625
 
 **Imports:**
 - `std::cell::RefCell`
@@ -479,7 +486,7 @@ jenkins_tray/
 - `std::sync::{Arc, Mutex, MutexGuard}`
 - `anyhow::Result`
 - `chrono::{Duration, Local, TimeZone}`
-- `slint::{CloseRequestResponse, ComponentHandle, Model, ModelRc, VecModel}`
+- `slint::{ComponentHandle, Model, ModelRc, VecModel}`
 - `app_update::{ApplicationUpdateService, UpdateSource}`
 - `config::ConfigurationService`
 - `model::{BuildCauseEnum, BuildDetails, BuildStatusEnum, Configuration, Project, Server}`
@@ -944,7 +951,7 @@ jenkins_tray/
 
 ## src/tray.rs
 
-**Language:** Rust | **Size:** 22.9 KB | **Lines:** 617
+**Language:** Rust | **Size:** 23.7 KB | **Lines:** 631
 
 **Imports:**
 - `std::collections::HashMap`
@@ -955,8 +962,6 @@ jenkins_tray/
 **Declarations:**
 
 `mod ksni_backend`
-
-`mod win32_backend`
 
 **`impl TrayBackend for StubTrayBackend`**
   `fn initialize(&mut self) -> Result<()>`
@@ -1019,4 +1024,12 @@ jenkins_tray/
 
 
 `mod tests`
+
+---
+
+## ui/tray.svg
+
+**Language:** XML | **Size:** 439 B | **Lines:** 7
+
+**Declarations:**
 

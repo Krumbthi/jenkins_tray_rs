@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::Result;
 use chrono::{Duration, Local, TimeZone};
-use slint::{CloseRequestResponse, ComponentHandle, Model, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use app_update::{ApplicationUpdateService, UpdateSource};
 use config::ConfigurationService;
@@ -2329,9 +2329,13 @@ fn main() -> Result<()> {
 
     let config_service = Arc::new(ConfigurationService::new()?);
 
-    // Tray (original: NotifyIcon + context menu + UpdateNotifierStartup).
-    let tray_hub = Arc::new(Mutex::new(tray::TrayHub::new()?));
-
+    // Tray notifier (original: TrayNotifier / NotifyIcon). The *visible* tray
+    // icon is Slint's built-in `SystemTrayIcon` - the exact mechanism the
+    // user's project_tracker client uses (see the `TrayIcon` component and its
+    // wiring further down). This hub only keeps the acknowledged-status
+    // bookkeeping and the platform presentation backend: the ksni
+    // StatusNotifierItem on Linux and the logging stub on Windows (where Slint
+    // draws the icon).
     let mut notification_service = NotificationService::new();
     notification_service.set_tray_notifier(Box::new(tray::StubTrayBackend));
     let notification_service = Arc::new(notification_service);
@@ -2397,10 +2401,73 @@ fn main() -> Result<()> {
         clients,
         updater,
         state: Arc::new(Mutex::new(AppState::default())),
-        tray: tray_hub,
+        tray: Arc::new(Mutex::new(tray::TrayHub::new()?)),
         app_update,
         runtime: runtime.handle().clone(),
     };
+
+    // --- System tray icon (the project_tracker mechanism) ---
+    //
+    // Slint's built-in `SystemTrayIcon`: creating the component registers the
+    // icon; `tray.show()` (just before the event loop below) makes it visible.
+    // This is exactly what project_tracker does (`let tray = TrayIcon::new()?;`
+    // + `tray.show()?` + `slint::run_event_loop()`), and on Windows the
+    // component internally uses Shell_NotifyIconW.
+    let tray = TrayIcon::new()?;
+    {
+        let ui_weak = ui.as_weak();
+        tray.on_show_window(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                show_or_focus(&ui);
+            }
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        tray.on_hide_window(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let _ = ui.hide();
+            }
+        });
+    }
+    {
+        let services = services.clone();
+        let windows = windows.clone();
+        tray.on_open_settings(move || {
+            if let Err(e) = populate_settings(&services, &windows.settings) {
+                log::error!("Could not load the settings dialog: {e}");
+            }
+            if let Err(e) = windows.settings.show() {
+                log::error!("Could not show the settings dialog: {e}");
+            }
+        });
+    }
+    {
+        let services = services.clone();
+        let ui_weak = ui.as_weak();
+        tray.on_refresh_projects(move || {
+            services.updater.borrow().refresh_all();
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_status_text("".into());
+                if let Err(e) = refresh_rows(&ui, &services.config, &services.state) {
+                    log::error!("Could not refresh the projects grid: {e}");
+                }
+            }
+        });
+    }
+    {
+        let windows = windows.clone();
+        tray.on_show_about(move || {
+            if let Err(e) = windows.about.show() {
+                log::error!("Could not show the About dialog: {e}");
+            }
+        });
+    }
+    tray.on_quit_app(move || {
+        if let Err(e) = slint::quit_event_loop() {
+            log::error!("Could not quit the event loop: {e}");
+        }
+    });
 
     // original: ApplicationUpdateService.Initialize -> EnableTimer(config) -
     // the first check runs 5 seconds after start-up, then hourly.
@@ -2420,33 +2487,8 @@ fn main() -> Result<()> {
     // When no tray host is actually showing the icon (e.g. WSLg with no
     // StatusNotifierWatcher), hiding would leave no visible way back -
     // minimize to the taskbar instead so the window stays reachable.
-    ui.window().on_close_requested({
-        let services = services.clone();
-        let ui = ui.as_weak();
-        move || {
-            let can_show_icon = services
-                .tray
-                .lock()
-                .map(|tray| tray.can_show_icon())
-                .unwrap_or(false);
-            if can_show_icon {
-                log::info!(
-                    "Window close requested - hiding to the tray \
-                     (tray menu \"Exit\" quits, relaunching re-shows the window)"
-                );
-                CloseRequestResponse::HideWindow
-            } else {
-                log::info!(
-                    "Window close requested - no tray icon visible, \
-                     minimizing to taskbar instead of hiding"
-                );
-                if let Some(ui) = ui.upgrade() {
-                    ui.window().set_minimized(true);
-                }
-                CloseRequestResponse::KeepWindowShown
-            }
-        }
-    });
+    // Close button → hide to tray (tray keeps event loop alive)
+    ui.window().on_close_requested(|| slint::CloseRequestResponse::HideWindow);
 
     // Relaunching the application re-shows this window (new feature; the
     // escape hatch on hosts without a tray icon).
@@ -2535,20 +2577,21 @@ fn main() -> Result<()> {
     services.updater.borrow_mut().start(runtime.handle());
 
     // Close to tray (original: the WinForms message loop keeps running for
-    // a hidden form): `Component::run()` would stop the event loop as soon
-    // as the last window is hidden - close-to-tray would kill the app (as a
-    // live test showed). Show the window explicitly and use the loop that
-    // stays alive until the tray menu's Exit action, or the update prompt's
-    // Yes, call `slint::quit_event_loop()` (new feature: close to tray,
-    // like the user's project_tracker client).
-    let run_result = ui.show().and_then(|()| slint::run_event_loop_until_quit());
+    // a hidden form): show the window and the tray icon, then run the event
+    // loop that stays alive until the tray menu's Exit action, or the update
+    // prompt's Yes, call `slint::quit_event_loop()` (same as project_tracker).
+    ui.show()?;
+    tray.show()?;
+    let run_result = slint::run_event_loop();
 
-    // --- Cleanup (original: application exit) ---
+    // Cleanup (original: application exit) ---
     runtime.block_on(services.updater.borrow_mut().stop());
     // original: Program.Application_Exit -> ConfigurationService.SaveConfiguration
     let _ = services.config.save();
-    if let Ok(tray) = services.tray.lock() {
-        let _ = tray.backend.exit();
+    // Tear down the platform presentation backend (a no-op logging stub on
+    // Windows, where the visible icon is Slint's `SystemTrayIcon`).
+    if let Ok(tray_hub) = services.tray.lock() {
+        let _ = tray_hub.backend.exit();
     }
     run_result?;
     log::info!("Jenkins Tray stopped");

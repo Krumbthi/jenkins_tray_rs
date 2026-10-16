@@ -303,3 +303,50 @@ export component AppWindow inherits Window {
         }
     }
 }
+
+// System Tray Icon - Slint's built-in `SystemTrayIcon` (the exact mechanism
+// the user's project_tracker client uses; on Windows it wraps
+// Shell_NotifyIconW internally). A `SystemTrayIcon` is a top-level component
+// with no window of its own, so it is defined next to (not inside) AppWindow.
+export component TrayIcon inherits SystemTrayIcon {
+    icon: @image-url("tray.svg");
+    tooltip: "Jenkins Tray";
+
+    // Wired from Rust (see `main.rs`): the menu mirrors the original
+    // NotifyIcon context menu (Open / Settings / Refresh / About / Exit).
+    callback show-window();
+    callback hide-window();
+    callback open-settings();
+    callback refresh-projects();
+    callback show-about();
+    callback quit-app();
+
+    Menu {
+        MenuItem {
+            title: "Open";
+            activated => { show-window(); }
+        }
+        MenuItem {
+            title: "Hide";
+            activated => { hide-window(); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "Settings";
+            activated => { open-settings(); }
+        }
+        MenuItem {
+            title: "Refresh";
+            activated => { refresh-projects(); }
+        }
+        MenuItem {
+            title: "About";
+            activated => { show-about(); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "Exit";
+            activated => { quit-app(); }
+        }
+    }
+}

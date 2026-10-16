@@ -33,15 +33,14 @@ fs2 = "0.4"
 ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
 zbus = { version = "5", features = ["blocking"] }
 
-# Windows tray: hand-rolled Shell_NotifyIconW backend (icon, tooltip, menu,
-# NIF_INFO balloons) - no crate covers balloons.
+# Windows: project_tracker's Win32 dependency is the `windows-sys` crate
+# (0.52). The tray itself is Slint's built-in `SystemTrayIcon` - there is no
+# hand-rolled Win32 code (matching project_tracker exactly); windows-sys is
+# kept to mirror that project's setup.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = [
+windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
-    "Win32_Graphics_Gdi",
     "Win32_System_LibraryLoader",
-    "Win32_System_SystemServices",
-    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

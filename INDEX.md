@@ -1,6 +1,6 @@
 # Codebase Index: jenkins_tray
 
-> Generated: 2026-10-16 12:50:06 UTC | Files: 20 | Lines: 9174
+> Generated: 2026-10-16 13:25:13 UTC | Files: 20 | Lines: 9177
 > Languages: Markdown (3), Properties (1), Rust (14), TOML (1), XML (1)
 
 ## Directory Structure
@@ -236,7 +236,7 @@ jenkins_tray/
 
 ## src/app_update.rs
 
-**Language:** Rust | **Size:** 16.6 KB | **Lines:** 413
+**Language:** Rust | **Size:** 16.8 KB | **Lines:** 416
 
 **Imports:**
 - `std::collections::HashMap`
@@ -250,7 +250,7 @@ jenkins_tray/
 
 `const URL: &str = "https://raw.githubusercontent.com/Krumbthi/jenkins_tray_rs/master/scripts/version.properties"`
 
-`const UPDATE_FEED_AVAILABLE: bool = true`
+`const UPDATE_FEED_AVAILABLE: bool = false`
 
 `const UPDATE_DELAY: Duration = Duration::from_secs(5)`
 

@@ -50,7 +50,10 @@ const URL: &str = "https://raw.githubusercontent.com/Krumbthi/jenkins_tray_rs/ma
 /// (`DoCheckForUpdates`). Set to `false` to hard-disable them again (the
 /// port's state before the feed existed: the original project's feed would
 /// advertise the C# application as an "update").
-const UPDATE_FEED_AVAILABLE: bool = true;
+///
+/// Currently `false`: the update mechanism is disabled for now (temporary).
+/// Flip back to `true` to re-enable the startup/timer/manual checks.
+const UPDATE_FEED_AVAILABLE: bool = false;
 
 /// 5 seconds delay for the 1st check on application start up
 /// (original: `DEFAULT_UPDATE_DELAY`).

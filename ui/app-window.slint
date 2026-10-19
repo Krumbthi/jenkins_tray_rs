@@ -321,6 +321,10 @@ export component TrayIcon inherits SystemTrayIcon {
     callback show-about();
     callback quit-app();
 
+    // Left-click on the tray icon (fires on Windows/macOS/Linux) brings
+    // the window back — equivalent to the original's notifyIcon double-click.
+    clicked => { show-window(); }
+
     Menu {
         MenuItem {
             title: "Open";

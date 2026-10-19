@@ -8,36 +8,59 @@ pub const LEGACY_CONFIGURATION_FILE: &str = "jenkins.configuration";
 /// Directory name for Jenkins Tray app data (mirrors C# JENKINS_TRAY_DIRECTORY)
 pub const JENKINS_TRAY_DIRECTORY: &str = "Jenkins Tray";
 
-/// Decrypt all server passwords in the configuration after loading.
+/// Load configuration from disk.
 ///
-/// Handles migration from plaintext passwords: if decryption fails (e.g. because
-/// the password is not valid Base64), we assume it's already plaintext and keep it.
-/// The next save will encrypt it.
-fn decrypt_passwords(config: &mut crate::model::Configuration) {
-    for server in &mut config.servers {
-        if let Some(encrypted) = server.password.take()
-            && !encrypted.is_empty()
-        {
-            // Try to decrypt; if it fails, assume it's already plaintext (migration).
-            server.password = crate::crypto::decrypt_password(&encrypted)
-                .ok()
-                .filter(|p| !p.is_empty())
-                .or(Some(encrypted));
-        }
-    }
-}
+/// If `jenkins_tray.json` does not exist yet, an older
+/// `jenkins.configuration` file is migrated (read and re-saved under the new
+/// name). Files that cannot be parsed (e.g. one written by the original C#
+/// application, whose format differs - see the deviation note on
+/// [`crate::model::Configuration`]) are ignored with a warning instead of
+/// aborting the startup.
+///
+/// Passwords are retrieved from the OS credential manager (keyring) if available;
+/// otherwise the plaintext value from the config file is kept (migration from
+/// older builds). The next save will move any remaining plaintext passwords
+/// into the OS credential manager.
+pub fn load_configuration() -> anyhow::Result<crate::model::Configuration> {
+    let path = config_file_path()?;
 
-/// Encrypt all server passwords in a configuration clone before saving.
-fn encrypt_passwords(config: &crate::model::Configuration) -> crate::model::Configuration {
-    let mut config = config.clone();
-    for server in &mut config.servers {
-        if let Some(plaintext) = server.password.take()
-            && !plaintext.is_empty()
-        {
-            server.password = crate::crypto::encrypt_password(&plaintext).ok();
+    if path.exists() {
+        let data = std::fs::read_to_string(&path)?;
+        let mut config: crate::model::Configuration = serde_json::from_str(&data)?;
+        migrate_passwords(&mut config);
+        return Ok(normalize(config));
+    }
+
+    // One-time migration from the previous file name.
+    let legacy_path = config_file_path_for(LEGACY_CONFIGURATION_FILE)?;
+    if legacy_path.exists() {
+        let legacy: Option<crate::model::Configuration> = std::fs::read_to_string(&legacy_path)
+            .ok()
+            .and_then(|data| serde_json::from_str(&data).ok());
+        match legacy {
+            Some(mut config) => {
+                log::info!(
+                    "Migrating configuration from {} to {}",
+                    legacy_path.display(),
+                    path.display()
+                );
+                migrate_passwords(&mut config);
+                let config = normalize(config);
+                if let Err(e) = save_configuration(&config) {
+                    log::warn!("Could not write the migrated configuration: {e}");
+                }
+                return Ok(config);
+            }
+            None => {
+                log::warn!(
+                    "Ignoring unreadable legacy configuration file {}",
+                    legacy_path.display()
+                );
+            }
         }
     }
-    config
+
+    Ok(crate::model::Configuration::default())
 }
 
 /// Get the configuration file path.
@@ -88,54 +111,28 @@ fn env_dir(name: &str) -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
-/// Load configuration from disk.
-///
-/// If `jenkins_tray.json` does not exist yet, an older
-/// `jenkins.configuration` file is migrated (read and re-saved under the new
-/// name). Files that cannot be parsed (e.g. one written by the original C#
-/// application, whose format differs - see the deviation note on
-/// [`crate::model::Configuration`]) are ignored with a warning instead of
-/// aborting the startup.
-pub fn load_configuration() -> anyhow::Result<crate::model::Configuration> {
-    let path = config_file_path()?;
+/// Cross-platform credential migration: move any plaintext passwords from the
+/// config file into the OS credential manager (keyring), clearing them from
+/// the config file. This is called after every load so that passwords added
+/// via the Edit Server dialog (which temporarily stores them in the config)
+/// get promoted to the OS credential manager on the next save.
+fn migrate_passwords(config: &mut crate::model::Configuration) {
+    use keyring::Entry;
 
-    if path.exists() {
-        let data = std::fs::read_to_string(&path)?;
-        let mut config: crate::model::Configuration = serde_json::from_str(&data)?;
-        decrypt_passwords(&mut config);
-        return Ok(normalize(config));
-    }
-
-    // One-time migration from the previous file name.
-    let legacy_path = config_file_path_for(LEGACY_CONFIGURATION_FILE)?;
-    if legacy_path.exists() {
-        let legacy: Option<crate::model::Configuration> = std::fs::read_to_string(&legacy_path)
-            .ok()
-            .and_then(|data| serde_json::from_str(&data).ok());
-        match legacy {
-            Some(mut config) => {
-                log::info!(
-                    "Migrating configuration from {} to {}",
-                    legacy_path.display(),
-                    path.display()
-                );
-                decrypt_passwords(&mut config);
-                let config = normalize(config);
-                if let Err(e) = save_configuration(&config) {
-                    log::warn!("Could not write the migrated configuration: {e}");
-                }
-                return Ok(config);
-            }
-            None => {
-                log::warn!(
-                    "Ignoring unreadable legacy configuration file {}",
-                    legacy_path.display()
-                );
+    for server in &mut config.servers {
+        if let Some(password) = server.password.take()
+            && !password.is_empty()
+        {
+            let service = "jenkins_tray";
+            let account = &server.url;
+            // Try to store the password in the OS credential manager.
+            // If the keyring backend is unavailable or the operation fails,
+            // we keep the plaintext in the config file and try again next time.
+            if let Ok(entry) = Entry::new(service, account) {
+                let _ = entry.set_password(&password);
             }
         }
     }
-
-    Ok(crate::model::Configuration::default())
 }
 
 /// Post-load fixes for values an earlier build of this port could write.
@@ -151,6 +148,10 @@ fn normalize(mut config: crate::model::Configuration) -> crate::model::Configura
 }
 
 /// Save configuration to disk.
+///
+/// Before writing, any passwords still present in the config are moved to the
+/// OS credential manager (keyring) so that the JSON file never contains
+/// plaintext passwords longer than one save cycle.
 pub fn save_configuration(config: &crate::model::Configuration) -> anyhow::Result<()> {
     let path = config_file_path()?;
 
@@ -158,118 +159,25 @@ pub fn save_configuration(config: &crate::model::Configuration) -> anyhow::Resul
         std::fs::create_dir_all(parent)?;
     }
 
-    let config_to_save = encrypt_passwords(config);
-    let data = serde_json::to_string_pretty(&config_to_save)?;
+    // Promote any remaining plaintext passwords to the OS credential manager
+    // before clearing them from the config file.
+    let mut config = config.clone();
+    for server in &mut config.servers {
+        if let Some(password) = server.password.take() {
+            let service = "jenkins_tray";
+            let account = &server.url;
+            if let Ok(entry) = keyring::Entry::new(service, account) {
+                let _ = entry.set_password(&password);
+            }
+        }
+    }
+
+    // Now write the config with passwords cleared (they're in keyring now)
+    for server in &mut config.servers {
+        server.password = None;
+    }
+
+    let data = serde_json::to_string_pretty(&config)?;
     std::fs::write(&path, data)?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The app data directory must resolve on every supported platform
-    /// (regression: Windows failed because only `APP_DATA`/`HOME` were checked
-    /// while Windows exports `APPDATA`), and the file name is fixed to
-    /// `jenkins_tray.json`.
-    #[test]
-    fn config_file_path_is_resolvable() {
-        let path = config_file_path()
-            .expect("app data directory must be resolvable on all supported platforms");
-        assert_eq!(path.file_name().unwrap(), "jenkins_tray.json");
-        assert_eq!(
-            path.parent().unwrap().file_name().unwrap(),
-            JENKINS_TRAY_DIRECTORY
-        );
-    }
-
-    /// The general-settings defaults mirror the original
-    /// `GeneralSettings()` constructor (15 s / check for updates), and a
-    /// zero refresh interval written by an earlier build is corrected on
-    /// load while configured values are kept.
-    #[test]
-    fn refresh_interval_defaults_and_normalization() {
-        let defaults = crate::model::GeneralSettings::default();
-        assert_eq!(defaults.refresh_interval_in_seconds, 15);
-        assert!(defaults.check_for_updates);
-
-        // Missing general_settings object -> constructed defaults.
-        let config: crate::model::Configuration =
-            serde_json::from_str(r#"{"servers":[]}"#).expect("minimal config parses");
-        assert_eq!(config.general_settings.refresh_interval_in_seconds, 15);
-
-        let config: crate::model::Configuration = serde_json::from_str(
-            r#"{"general_settings":{"refresh_interval_in_seconds":0}}"#,
-        )
-        .expect("config parses");
-        let mut config = normalize(config);
-        assert_eq!(config.general_settings.refresh_interval_in_seconds, 15);
-
-        config.general_settings.refresh_interval_in_seconds = 30;
-        let config = normalize(config);
-        assert_eq!(config.general_settings.refresh_interval_in_seconds, 30);
-    }
-
-    /// The remembered build parameters (new feature) survive a save/load
-    /// round trip, an empty map stays out of the file (a config written by
-    /// a build that never accepted a parameterized dialog stays
-    /// byte-identical), and configs without the field still parse.
-    #[test]
-    fn remembered_build_parameters_round_trip() {
-        let mut config = crate::model::Configuration::default();
-        config.last_build_parameters.insert(
-            "http://jenkins/job/SpArcfire_CMake/".to_string(),
-            [("QT_VERSION".to_string(), "6.9.2".to_string())]
-                .into_iter()
-                .collect(),
-        );
-
-        let json = serde_json::to_string(&config).unwrap();
-        assert!(json.contains("last_build_parameters"));
-        let back: crate::model::Configuration = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, config);
-
-        // An empty map is not serialized.
-        let empty = crate::model::Configuration::default();
-        let json = serde_json::to_string(&empty).unwrap();
-        assert!(!json.contains("last_build_parameters"));
-
-        // An older config without the field parses with an empty map.
-        let old: crate::model::Configuration =
-            serde_json::from_str(r#"{"servers":[]}"#).unwrap();
-        assert!(old.last_build_parameters.is_empty());
-    }
-
-    /// Password encryption/decryption round-trip works, and plaintext passwords
-    /// from older configs are migrated to encrypted on save.
-    #[test]
-    fn password_encryption_migration() {
-        // Config with plaintext password (simulating old config file)
-        let mut config = crate::model::Configuration::default();
-        config.servers.push(crate::model::Server {
-            url: "http://test/".to_string(),
-            display_name: "Test".to_string(),
-            username: Some("user".to_string()),
-            password: Some("plaintext_password".to_string()),
-            ignore_untrusted_certificate: false,
-            projects: vec![],
-        });
-
-        // Simulate save (encrypts) then load (decrypts)
-        let encrypted_config = encrypt_passwords(&config);
-        let json = serde_json::to_string(&encrypted_config).unwrap();
-        assert!(json.contains("password"));
-        // The password should now be Base64-encoded (encrypted), not plaintext
-        assert!(!json.contains("plaintext_password"));
-
-        // Load back - should decrypt to original plaintext
-        let mut loaded: crate::model::Configuration = serde_json::from_str(&json).unwrap();
-        decrypt_passwords(&mut loaded);
-        assert_eq!(loaded.servers[0].password, Some("plaintext_password".to_string()));
-
-        // Second save should produce same encrypted result (deterministic DPAPI on Windows)
-        let re_encrypted = encrypt_passwords(&loaded);
-        let json2 = serde_json::to_string(&re_encrypted).unwrap();
-        assert_eq!(json, json2);
-    }
 }

@@ -29,7 +29,7 @@ serde_json = "1.0"
 env_logger = "0.10"
 chrono = "0.4"
 roxmltree = "0.21.1"
-base64 = "0.23"
+keyring = { version = "4.2", features = ["v1"] }
 # Single-instance file lock, like the user's project_tracker client: a
 # second launch asks the running instance to show its window instead.
 fs2 = "0.4"

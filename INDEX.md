@@ -1,7 +1,7 @@
 # Codebase Index: jenkins_tray
 
-> Generated: 2026-10-16 13:25:13 UTC | Files: 20 | Lines: 9177
-> Languages: Markdown (3), Properties (1), Rust (14), TOML (1), XML (1)
+> Generated: 2026-10-19 12:30:31 UTC | Files: 24 | Lines: 10770
+> Languages: Markdown (7), Properties (1), Rust (14), TOML (1), XML (1)
 
 ## Directory Structure
 
@@ -12,6 +12,11 @@ jenkins_tray/
   PORT_INSTRUCTIONS.md
   README.md
   build.rs
+  doc/
+    INDEX.md
+    PORT_INSTRUCTIONS.md
+    SECURITY.md
+    TODO.md
   scripts/
     version.properties
   src/
@@ -40,6 +45,7 @@ jenkins_tray/
 
 **Cargo.toml**
 - `[package]`
+- `[package.metadata.winresource]`
 - `[dependencies]`
 - `[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]`
 - `[target.'cfg(windows)'.dependencies]`
@@ -62,6 +68,20 @@ jenkins_tray/
 - `## Usage`
 - `## Logging`
 
+**doc/INDEX.md**
+- `# Codebase Index: jenkins_tray`
+
+**doc/PORT_INSTRUCTIONS.md**
+- `### I'd structure the Rust port like this`
+- `## The model should be different from what we were doing before`
+- `## And I'd simplify the Slint model`
+- `## The main window should reproduce the original functionality`
+- `## The tray is particularly important`
+- `## One thing I would *not* port literally`
+
+**doc/SECURITY.md**
+- `# Recommended architecture: Rust + Slint + Jenkins`
+
 **scripts/version.properties**
 - `version.*`
 
@@ -73,8 +93,8 @@ jenkins_tray/
 - `pub const CONFIGURATION_FILE: &str = "jenkins_tray.json"`
 - `pub const LEGACY_CONFIGURATION_FILE: &str = "jenkins.configuration"`
 - `pub const JENKINS_TRAY_DIRECTORY: &str = "Jenkins Tray"`
-- `pub fn config_file_path() -> anyhow::Result<std::path::PathBuf>`
 - `pub fn load_configuration() -> anyhow::Result<crate::model::Configuration>`
+- `pub fn config_file_path() -> anyhow::Result<std::path::PathBuf>`
 - `pub fn save_configuration(config: &crate::model::Configuration) -> anyhow::Result<()>`
 
 **src/config.rs**
@@ -166,14 +186,15 @@ jenkins_tray/
 
 **ui/tray.svg**
 - `<svg>`
-- `<circle>`
-- `<line>`
+- `<title>`
+- `<desc>`
+- `<image>`
 
 ---
 
 ## Cargo.toml
 
-**Language:** TOML | **Size:** 1.9 KB | **Lines:** 52
+**Language:** TOML | **Size:** 2.8 KB | **Lines:** 69
 
 **Imports:**
 - `slint`
@@ -186,7 +207,7 @@ jenkins_tray/
 - `env_logger`
 - `chrono`
 - `roxmltree`
-- *... and 2 more imports*
+- *... and 4 more imports*
 
 **Declarations:**
 
@@ -194,7 +215,7 @@ jenkins_tray/
 
 ## INDEX.md
 
-**Language:** Markdown | **Size:** 28.9 KB | **Lines:** 1035
+**Language:** Markdown | **Size:** 29.9 KB | **Lines:** 1086
 
 **Declarations:**
 
@@ -218,11 +239,41 @@ jenkins_tray/
 
 ## build.rs
 
-**Language:** Rust | **Size:** 2.0 KB | **Lines:** 37
+**Language:** Rust | **Size:** 2.7 KB | **Lines:** 50
 
 **Declarations:**
 
 `fn main()`
+
+---
+
+## doc/INDEX.md
+
+**Language:** Markdown | **Size:** 28.9 KB | **Lines:** 1036
+
+**Declarations:**
+
+---
+
+## doc/PORT_INSTRUCTIONS.md
+
+**Language:** Markdown | **Size:** 7.8 KB | **Lines:** 272
+
+**Declarations:**
+
+---
+
+## doc/SECURITY.md
+
+**Language:** Markdown | **Size:** 10.9 KB | **Lines:** 226
+
+**Declarations:**
+
+---
+
+## doc/TODO.md
+
+**Language:** Markdown | **Size:** 97 B | **Lines:** 3
 
 ---
 
@@ -302,7 +353,7 @@ jenkins_tray/
 
 ## src/config/configuration.rs
 
-**Language:** Rust | **Size:** 8.1 KB | **Lines:** 207
+**Language:** Rust | **Size:** 7.1 KB | **Lines:** 183
 
 **Declarations:**
 
@@ -312,9 +363,9 @@ jenkins_tray/
 
 `fn env_dir(name: &str) -> Option<std::path::PathBuf>`
 
-`fn normalize(mut config: crate::model::Configuration) -> crate::model::Configuration`
+`fn migrate_passwords(config: &mut crate::model::Configuration)`
 
-`mod tests`
+`fn normalize(mut config: crate::model::Configuration) -> crate::model::Configuration`
 
 ---
 
@@ -1029,7 +1080,7 @@ jenkins_tray/
 
 ## ui/tray.svg
 
-**Language:** XML | **Size:** 439 B | **Lines:** 7
+**Language:** XML | **Size:** 118.9 KB | **Lines:** 6
 
 **Declarations:**
 

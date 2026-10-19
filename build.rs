@@ -34,4 +34,17 @@ fn main() {
     let style_config = slint_build::CompilerConfiguration::default().with_style("fluent-light".into());
     slint_build::compile_with_config("ui/app-window.slint", style_config)
         .expect("Slint build failed");
+
+    // Embed the application icon into the executable's resources (RT_GROUP_ICON
+    // / RT_ICON) - this is the icon Explorer, the taskbar and Alt-Tab show for
+    // the .exe itself (ui/app-window.slint's `icon:` only sets the window icon
+    // at runtime). build.rs runs on the *host*, so test the target OS via
+    // CARGO_CFG_TARGET_OS; `#[cfg(windows)]` would be false when cross-compiling.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        winresource::WindowsResource::new()
+            .set_icon("assets/icon.ico")
+            .compile()
+            .expect("failed to embed assets/icon.ico into the executable");
+    }
+    println!("cargo:rerun-if-changed=assets/icon.ico");
 }

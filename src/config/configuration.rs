@@ -8,6 +8,38 @@ pub const LEGACY_CONFIGURATION_FILE: &str = "jenkins.configuration";
 /// Directory name for Jenkins Tray app data (mirrors C# JENKINS_TRAY_DIRECTORY)
 pub const JENKINS_TRAY_DIRECTORY: &str = "Jenkins Tray";
 
+/// Decrypt all server passwords in the configuration after loading.
+///
+/// Handles migration from plaintext passwords: if decryption fails (e.g. because
+/// the password is not valid Base64), we assume it's already plaintext and keep it.
+/// The next save will encrypt it.
+fn decrypt_passwords(config: &mut crate::model::Configuration) {
+    for server in &mut config.servers {
+        if let Some(encrypted) = server.password.take()
+            && !encrypted.is_empty()
+        {
+            // Try to decrypt; if it fails, assume it's already plaintext (migration).
+            server.password = crate::crypto::decrypt_password(&encrypted)
+                .ok()
+                .filter(|p| !p.is_empty())
+                .or(Some(encrypted));
+        }
+    }
+}
+
+/// Encrypt all server passwords in a configuration clone before saving.
+fn encrypt_passwords(config: &crate::model::Configuration) -> crate::model::Configuration {
+    let mut config = config.clone();
+    for server in &mut config.servers {
+        if let Some(plaintext) = server.password.take()
+            && !plaintext.is_empty()
+        {
+            server.password = crate::crypto::encrypt_password(&plaintext).ok();
+        }
+    }
+    config
+}
+
 /// Get the configuration file path.
 ///
 /// The file lives in `%APPDATA%\Jenkins Tray` (equivalent of the original
@@ -69,7 +101,8 @@ pub fn load_configuration() -> anyhow::Result<crate::model::Configuration> {
 
     if path.exists() {
         let data = std::fs::read_to_string(&path)?;
-        let config: crate::model::Configuration = serde_json::from_str(&data)?;
+        let mut config: crate::model::Configuration = serde_json::from_str(&data)?;
+        decrypt_passwords(&mut config);
         return Ok(normalize(config));
     }
 
@@ -80,12 +113,13 @@ pub fn load_configuration() -> anyhow::Result<crate::model::Configuration> {
             .ok()
             .and_then(|data| serde_json::from_str(&data).ok());
         match legacy {
-            Some(config) => {
+            Some(mut config) => {
                 log::info!(
                     "Migrating configuration from {} to {}",
                     legacy_path.display(),
                     path.display()
                 );
+                decrypt_passwords(&mut config);
                 let config = normalize(config);
                 if let Err(e) = save_configuration(&config) {
                     log::warn!("Could not write the migrated configuration: {e}");
@@ -124,7 +158,8 @@ pub fn save_configuration(config: &crate::model::Configuration) -> anyhow::Resul
         std::fs::create_dir_all(parent)?;
     }
 
-    let data = serde_json::to_string_pretty(config)?;
+    let config_to_save = encrypt_passwords(config);
+    let data = serde_json::to_string_pretty(&config_to_save)?;
     std::fs::write(&path, data)?;
     Ok(())
 }
@@ -203,5 +238,38 @@ mod tests {
         let old: crate::model::Configuration =
             serde_json::from_str(r#"{"servers":[]}"#).unwrap();
         assert!(old.last_build_parameters.is_empty());
+    }
+
+    /// Password encryption/decryption round-trip works, and plaintext passwords
+    /// from older configs are migrated to encrypted on save.
+    #[test]
+    fn password_encryption_migration() {
+        // Config with plaintext password (simulating old config file)
+        let mut config = crate::model::Configuration::default();
+        config.servers.push(crate::model::Server {
+            url: "http://test/".to_string(),
+            display_name: "Test".to_string(),
+            username: Some("user".to_string()),
+            password: Some("plaintext_password".to_string()),
+            ignore_untrusted_certificate: false,
+            projects: vec![],
+        });
+
+        // Simulate save (encrypts) then load (decrypts)
+        let encrypted_config = encrypt_passwords(&config);
+        let json = serde_json::to_string(&encrypted_config).unwrap();
+        assert!(json.contains("password"));
+        // The password should now be Base64-encoded (encrypted), not plaintext
+        assert!(!json.contains("plaintext_password"));
+
+        // Load back - should decrypt to original plaintext
+        let mut loaded: crate::model::Configuration = serde_json::from_str(&json).unwrap();
+        decrypt_passwords(&mut loaded);
+        assert_eq!(loaded.servers[0].password, Some("plaintext_password".to_string()));
+
+        // Second save should produce same encrypted result (deterministic DPAPI on Windows)
+        let re_encrypted = encrypt_passwords(&loaded);
+        let json2 = serde_json::to_string(&re_encrypted).unwrap();
+        assert_eq!(json, json2);
     }
 }

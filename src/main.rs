@@ -34,6 +34,7 @@ slint::include_modules!();
 
 mod app_update;
 mod config;
+mod crypto;
 mod errors;
 mod jenkins_client;
 mod model;

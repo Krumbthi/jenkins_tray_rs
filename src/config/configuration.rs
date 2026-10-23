@@ -27,7 +27,7 @@ pub fn load_configuration() -> anyhow::Result<crate::model::Configuration> {
     if path.exists() {
         let data = std::fs::read_to_string(&path)?;
         let mut config: crate::model::Configuration = serde_json::from_str(&data)?;
-        migrate_passwords(&mut config);
+        load_passwords(&mut config);
         return Ok(normalize(config));
     }
 
@@ -44,7 +44,7 @@ pub fn load_configuration() -> anyhow::Result<crate::model::Configuration> {
                     legacy_path.display(),
                     path.display()
                 );
-                migrate_passwords(&mut config);
+                load_passwords(&mut config);
                 let config = normalize(config);
                 if let Err(e) = save_configuration(&config) {
                     log::warn!("Could not write the migrated configuration: {e}");
@@ -111,26 +111,86 @@ fn env_dir(name: &str) -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
-/// Cross-platform credential migration: move any plaintext passwords from the
-/// config file into the OS credential manager (keyring), clearing them from
-/// the config file. This is called after every load so that passwords added
-/// via the Edit Server dialog (which temporarily stores them in the config)
-/// get promoted to the OS credential manager on the next save.
-fn migrate_passwords(config: &mut crate::model::Configuration) {
-    use keyring::Entry;
+/// Keyring service name; the account is the server URL.
+const KEYRING_SERVICE: &str = "jenkins_tray";
 
+/// Stores a password in the OS credential manager; `false` when the backend is
+/// unavailable (e.g. no secret service under WSLg).
+fn store_password(account: &str, password: &str) -> bool {
+    keyring::Entry::new(KEYRING_SERVICE, account)
+        .and_then(|entry| entry.set_password(password))
+        .is_ok()
+}
+
+/// Reads a password back from the OS credential manager.
+fn keyring_password(account: &str) -> Option<String> {
+    keyring::Entry::new(KEYRING_SERVICE, account)
+        .ok()?
+        .get_password()
+        .ok()
+        .filter(|password| !password.is_empty())
+}
+
+/// Removes the stored password (best effort).
+///
+/// Called when the user clears the password field: without this, the next load
+/// would restore the stale credential from the OS credential manager.
+fn forget_password(account: &str) {
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, account) {
+        let _ = entry.delete_credential();
+    }
+}
+
+/// Whether the server has credentials worth looking up.
+fn has_username(server: &crate::model::Server) -> bool {
+    server.username.as_deref().is_some_and(|username| !username.is_empty())
+}
+
+/// Moves plaintext passwords into the OS credential manager and restores the
+/// ones a previous save already moved there.
+///
+/// A plaintext password (from an older build, or added by the Edit Server
+/// dialog, which stores it in the configuration until the next save) is only
+/// dropped once the credential manager accepted it; otherwise it stays in the
+/// configuration and the next save retries, instead of silently losing the
+/// credentials.
+///
+/// An *empty* password means the user cleared the field: the stored
+/// credential is deleted so it is not restored again.
+fn load_passwords(config: &mut crate::model::Configuration) {
     for server in &mut config.servers {
-        if let Some(password) = server.password.take()
-            && !password.is_empty()
-        {
-            let service = "jenkins_tray";
-            let account = &server.url;
-            // Try to store the password in the OS credential manager.
-            // If the keyring backend is unavailable or the operation fails,
-            // we keep the plaintext in the config file and try again next time.
-            if let Ok(entry) = Entry::new(service, account) {
-                let _ = entry.set_password(&password);
+        match server.password.take() {
+            Some(password) if password.is_empty() => {
+                forget_password(&server.url);
+                server.password = Some(password);
             }
+            Some(password) => {
+                if !store_password(&server.url, &password) {
+                    server.password = Some(password);
+                }
+            }
+            None if has_username(server) => {
+                server.password = keyring_password(&server.url);
+            }
+            None => {}
+        }
+    }
+}
+
+/// Drops every plaintext password that the credential manager accepted,
+/// keeping the ones it refused (so they are written to the config and retried
+/// on the next load). An empty password stays in the config (and deletes any
+/// stored credential) so that clearing the field survives a restart.
+fn promote_passwords(config: &mut crate::model::Configuration) {
+    for server in &mut config.servers {
+        let Some(password) = server.password.take() else {
+            continue;
+        };
+        if password.is_empty() {
+            forget_password(&server.url);
+            server.password = Some(password);
+        } else if !store_password(&server.url, &password) {
+            server.password = Some(password);
         }
     }
 }
@@ -150,8 +210,10 @@ fn normalize(mut config: crate::model::Configuration) -> crate::model::Configura
 /// Save configuration to disk.
 ///
 /// Before writing, any passwords still present in the config are moved to the
-/// OS credential manager (keyring) so that the JSON file never contains
-/// plaintext passwords longer than one save cycle.
+/// OS credential manager (keyring) so that the JSON file does not contain
+/// plaintext passwords when the manager is available. If it is not, the
+/// plaintext is kept (and retried next time) rather than losing the
+/// credentials.
 pub fn save_configuration(config: &crate::model::Configuration) -> anyhow::Result<()> {
     let path = config_file_path()?;
 
@@ -159,23 +221,8 @@ pub fn save_configuration(config: &crate::model::Configuration) -> anyhow::Resul
         std::fs::create_dir_all(parent)?;
     }
 
-    // Promote any remaining plaintext passwords to the OS credential manager
-    // before clearing them from the config file.
     let mut config = config.clone();
-    for server in &mut config.servers {
-        if let Some(password) = server.password.take() {
-            let service = "jenkins_tray";
-            let account = &server.url;
-            if let Ok(entry) = keyring::Entry::new(service, account) {
-                let _ = entry.set_password(&password);
-            }
-        }
-    }
-
-    // Now write the config with passwords cleared (they're in keyring now)
-    for server in &mut config.servers {
-        server.password = None;
-    }
+    promote_passwords(&mut config);
 
     let data = serde_json::to_string_pretty(&config)?;
     std::fs::write(&path, data)?;

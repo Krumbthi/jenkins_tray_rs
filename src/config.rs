@@ -294,7 +294,6 @@ impl ConfigurationService {
         Ok(())
     }
 
-    /// Get all projects grouped by server.
     /// Get the general settings.
     pub fn get_general_settings(&self) -> anyhow::Result<GeneralSettings> {
         let c = self.config.read().map_err(|e| anyhow::anyhow!("RwLock read error: {}", e))?;

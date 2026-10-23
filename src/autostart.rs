@@ -39,22 +39,31 @@ pub fn enable() -> anyhow::Result<()> {
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let (key, _) = hkcu.create_subkey(RUN_KEY)?;
-    key.set_value(RUN_VALUE_NAME, &exe_path.to_string_lossy())?;
+    key.set_value(RUN_VALUE_NAME, &exe_path.to_string_lossy().into_owned())?;
     Ok(())
 }
 
 /// Disable autostart: remove the registry value (if present).
 #[cfg(windows)]
 pub fn disable() -> anyhow::Result<()> {
-    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
     use winreg::RegKey;
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    if let Ok(key) = hkcu.open_subkey_mut(RUN_KEY) {
-        // Ignore the error if the value doesn't exist (already disabled).
-        let _ = key.delete_value(RUN_VALUE_NAME);
+    // `open_subkey` would only grant KEY_READ, which is not enough for
+    // `delete_value` (it needs KEY_SET_VALUE).
+    let key = match hkcu.open_subkey_with_flags(RUN_KEY, KEY_SET_VALUE) {
+        Ok(key) => key,
+        // No Run key means there is nothing to disable.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    match key.delete_value(RUN_VALUE_NAME) {
+        Ok(()) => Ok(()),
+        // Already disabled.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
     }
-    Ok(())
 }
 
 /// Sync the registry state with the desired setting.

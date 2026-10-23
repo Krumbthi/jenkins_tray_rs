@@ -1,7 +1,7 @@
 # Codebase Index: jenkins_tray
 
-> Generated: 2026-10-19 12:30:31 UTC | Files: 24 | Lines: 10770
-> Languages: Markdown (7), Properties (1), Rust (14), TOML (1), XML (1)
+> Generated: 2026-10-23 08:18:24 UTC | Files: 25 | Lines: 11097
+> Languages: Markdown (7), Properties (1), Rust (15), TOML (1), XML (1)
 
 ## Directory Structure
 
@@ -21,6 +21,7 @@ jenkins_tray/
     version.properties
   src/
     app_update.rs
+    autostart.rs
     config/
       configuration.rs
     config.rs
@@ -82,12 +83,23 @@ jenkins_tray/
 **doc/SECURITY.md**
 - `# Recommended architecture: Rust + Slint + Jenkins`
 
+**doc/TODO.md**
+- `# TODOs`
+
 **scripts/version.properties**
 - `version.*`
 
 **src/app_update.rs**
 - `pub enum UpdateSource`
 - `pub struct ApplicationUpdateService`
+
+**src/autostart.rs**
+- `pub fn is_enabled() -> bool`
+- `pub fn enable() -> anyhow::Result<()>`
+- `pub fn disable() -> anyhow::Result<()>`
+- `pub fn sync(enabled: bool)`
+- `pub fn is_enabled() -> bool`
+- `pub fn sync(_enabled: bool)`
 
 **src/config/configuration.rs**
 - `pub const CONFIGURATION_FILE: &str = "jenkins_tray.json"`
@@ -194,7 +206,7 @@ jenkins_tray/
 
 ## Cargo.toml
 
-**Language:** TOML | **Size:** 2.8 KB | **Lines:** 69
+**Language:** TOML | **Size:** 2.9 KB | **Lines:** 71
 
 **Imports:**
 - `slint`
@@ -215,7 +227,7 @@ jenkins_tray/
 
 ## INDEX.md
 
-**Language:** Markdown | **Size:** 29.9 KB | **Lines:** 1086
+**Language:** Markdown | **Size:** 31.3 KB | **Lines:** 1143
 
 **Declarations:**
 
@@ -273,7 +285,9 @@ jenkins_tray/
 
 ## doc/TODO.md
 
-**Language:** Markdown | **Size:** 97 B | **Lines:** 3
+**Language:** Markdown | **Size:** 259 B | **Lines:** 8
+
+**Declarations:**
 
 ---
 
@@ -351,9 +365,21 @@ jenkins_tray/
 
 ---
 
+## src/autostart.rs
+
+**Language:** Rust | **Size:** 3.0 KB | **Lines:** 91
+
+**Declarations:**
+
+`const RUN_VALUE_NAME: &str = "JenkinsTray"`
+
+`const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run"`
+
+---
+
 ## src/config/configuration.rs
 
-**Language:** Rust | **Size:** 7.1 KB | **Lines:** 183
+**Language:** Rust | **Size:** 8.8 KB | **Lines:** 230
 
 **Declarations:**
 
@@ -363,7 +389,19 @@ jenkins_tray/
 
 `fn env_dir(name: &str) -> Option<std::path::PathBuf>`
 
-`fn migrate_passwords(config: &mut crate::model::Configuration)`
+`const KEYRING_SERVICE: &str = "jenkins_tray"`
+
+`fn store_password(account: &str, password: &str) -> bool`
+
+`fn keyring_password(account: &str) -> Option<String>`
+
+`fn forget_password(account: &str)`
+
+`fn has_username(server: &crate::model::Server) -> bool`
+
+`fn load_passwords(config: &mut crate::model::Configuration)`
+
+`fn promote_passwords(config: &mut crate::model::Configuration)`
 
 `fn normalize(mut config: crate::model::Configuration) -> crate::model::Configuration`
 
@@ -371,7 +409,7 @@ jenkins_tray/
 
 ## src/config.rs
 
-**Language:** Rust | **Size:** 12.0 KB | **Lines:** 324
+**Language:** Rust | **Size:** 12.0 KB | **Lines:** 323
 
 **Imports:**
 - `std::sync::RwLock`
@@ -443,7 +481,7 @@ jenkins_tray/
 
 ## src/jenkins_client.rs
 
-**Language:** Rust | **Size:** 64.3 KB | **Lines:** 1606
+**Language:** Rust | **Size:** 64.4 KB | **Lines:** 1612
 
 **Imports:**
 - `std::collections::{HashMap, HashSet}`
@@ -472,11 +510,15 @@ jenkins_tray/
 
 `fn authenticated(req: reqwest::RequestBuilder, credentials: &Credentials) -> reqwest::RequestBuilder`
 
+`fn with_build_authentication( mut request: reqwest::RequestBuilder, project: &Project, ) -> reqwest::RequestBuilder`
+
 `async fn get_text( client: &reqwest::Client, credentials: &Credentials, url: &str, ) -> Result<String>`
 
 `async fn upload_string( credentials: &Credentials, request: reqwest::RequestBuilder, ) -> Result<String>`
 
 `fn split_origin(url: &str) -> Option<(&str, &str)>`
+
+`fn lock_cache(cache: &SharedCache) -> std::sync::MutexGuard<'_, XmlCache>`
 
 `async fn download( client: &reqwest::Client, credentials: &Credentials, url: &str, cache: Option<&SharedCache>, ) -> Result<String>`
 
@@ -528,7 +570,7 @@ jenkins_tray/
 
 ## src/main.rs
 
-**Language:** Rust | **Size:** 108.1 KB | **Lines:** 2625
+**Language:** Rust | **Size:** 110.8 KB | **Lines:** 2693
 
 **Imports:**
 - `std::cell::RefCell`
@@ -546,6 +588,8 @@ jenkins_tray/
 **Declarations:**
 
 `mod app_update`
+
+`mod autostart`
 
 `mod config`
 
@@ -632,6 +676,8 @@ jenkins_tray/
 
 `fn populate_project_list( config_service: &ConfigurationService, settings: &SettingsWindow, state: &Arc<Mutex<AppState>>, server_index: i32, ) -> Result<()>`
 
+`fn remove_server_at( services: &Services, ui: &slint::Weak<AppWindow>, settings_window: &slint::Weak<SettingsWindow>, index: usize, )`
+
 `fn set_sound_path(paths: &mut HashMap<String, String>, key: &str, value: String)`
 
 `fn is_valid_server_url(url: &str) -> bool`
@@ -642,13 +688,18 @@ jenkins_tray/
 
 `fn open_url(url: &str)`
 
-`static MESSAGE_BOX_YES_ACTION: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None)`
+`enum MessageBoxAction`
+> Variants: `Run`, `RemoveServer`
 
-`fn take_message_box_yes_action() -> Option<Box<dyn Fn() + Send>>`
+`static MESSAGE_BOX_YES_ACTION: Mutex<Option<MessageBoxAction>> = Mutex::new(None)`
+
+`fn take_message_box_yes_action() -> Option<MessageBoxAction>`
 
 `fn show_message_box(message_box: &slint::Weak<MessageBoxWindow>, caption: &str, message: &str)`
 
-`fn show_yes_no_message_box( message_box: &slint::Weak<MessageBoxWindow>, caption: &str, message: &str, on_yes: Box<dyn Fn() + Send>, )`
+`fn show_yes_no_message_box( message_box: &slint::Weak<MessageBoxWindow>, caption: &str, message: &str, action: MessageBoxAction, )`
+
+`fn show_message_box_with( message_box: &slint::Weak<MessageBoxWindow>, caption: &str, message: &str, yes_no: bool, )`
 
 `fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows)`
 
@@ -664,7 +715,7 @@ jenkins_tray/
 
 ## src/model.rs
 
-**Language:** Rust | **Size:** 17.9 KB | **Lines:** 466
+**Language:** Rust | **Size:** 19.0 KB | **Lines:** 516
 
 **Imports:**
 - `serde::{Deserialize, Serialize}`
@@ -699,6 +750,10 @@ jenkins_tray/
   `fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result`
 
 
+**`impl BuildStatusEnum`**
+  `fn severity(self) -> u8`
+
+
 **`impl Ord for BuildStatusEnum`**
   `fn cmp(&self, other: &Self) -> Ordering`
 
@@ -710,6 +765,8 @@ jenkins_tray/
 **`impl Default for GeneralSettings`**
   `fn default() -> Self`
 
+
+`mod tests`
 
 ---
 
@@ -754,7 +811,7 @@ jenkins_tray/
 
 ## src/projects_updater.rs
 
-**Language:** Rust | **Size:** 8.4 KB | **Lines:** 242
+**Language:** Rust | **Size:** 8.7 KB | **Lines:** 246
 
 **Imports:**
 - `std::sync::Arc`
@@ -1002,7 +1059,7 @@ jenkins_tray/
 
 ## src/tray.rs
 
-**Language:** Rust | **Size:** 23.7 KB | **Lines:** 631
+**Language:** Rust | **Size:** 23.6 KB | **Lines:** 629
 
 **Imports:**
 - `std::collections::HashMap`

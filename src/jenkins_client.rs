@@ -104,6 +104,24 @@ fn authenticated(req: reqwest::RequestBuilder, credentials: &Credentials) -> req
     }
 }
 
+/// Appends the project's authentication token and cause text as query
+/// parameters (shared by every build action; the original concatenates
+/// `&token=` onto the build URL, which produces an invalid URL - see the
+/// module note).
+fn with_build_authentication(
+    mut request: reqwest::RequestBuilder,
+    project: &Project,
+) -> reqwest::RequestBuilder {
+    let Some(token) = non_empty(project.authentication_token.as_deref()) else {
+        return request;
+    };
+    request = request.query(&[("token", token)]);
+    if let Some(cause) = non_empty(project.cause_text.as_deref()) {
+        request = request.query(&[("cause", cause)]);
+    }
+    request
+}
+
 async fn get_text(
     client: &reqwest::Client,
     credentials: &Credentials,
@@ -204,6 +222,12 @@ pub fn new_cache() -> SharedCache {
     Arc::new(Mutex::new(XmlCache::default()))
 }
 
+/// Locks the shared cache, ignoring poisoning: a panic in a previous holder
+/// must not take the polling loop down (the cached documents stay valid).
+fn lock_cache(cache: &SharedCache) -> std::sync::MutexGuard<'_, XmlCache> {
+    cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Downloads `url`, consulting and filling the cache for cacheable documents
 /// (original: DownloadString with `cacheable = true`).
 async fn download(
@@ -213,7 +237,7 @@ async fn download(
     cache: Option<&SharedCache>,
 ) -> Result<String> {
     if let Some(cache) = cache {
-        let mut cache = cache.lock().expect("xml cache poisoned");
+        let mut cache = lock_cache(cache);
         cache.visited.insert(url.to_string());
         if let Some(cached) = cache.entries.get(url) {
             log::trace!("Cache hit: {url}");
@@ -226,7 +250,7 @@ async fn download(
     let text = get_text(client, credentials, url).await?;
 
     if let Some(cache) = cache {
-        let mut cache = cache.lock().expect("xml cache poisoned");
+        let mut cache = lock_cache(cache);
         cache.entries.insert(url.to_string(), text.clone());
     }
     Ok(text)
@@ -235,7 +259,7 @@ async fn download(
 /// Keeps only the entries visited during the last cycle
 /// (original: JenkinsService.RecycleCache).
 pub fn recycle_cache(cache: &SharedCache) {
-    let mut cache = cache.lock().expect("xml cache poisoned");
+    let mut cache = lock_cache(cache);
     let visited = std::mem::take(&mut cache.visited);
     cache.entries.retain(|url, _| visited.contains(url));
 }
@@ -243,7 +267,7 @@ pub fn recycle_cache(cache: &SharedCache) {
 /// Drops one document from the cache
 /// (original: JenkinsService.RemoveFromCache).
 pub fn remove_cache_entry(cache: &SharedCache, url: &str) {
-    let mut cache = cache.lock().expect("xml cache poisoned");
+    let mut cache = lock_cache(cache);
     cache.entries.remove(url);
     cache.visited.remove(url);
 }
@@ -666,13 +690,7 @@ pub async fn trigger_build(
     let url = concat_urls(&rebase_url(&project.url, server), &["build?delay=0sec"]);
     log::info!("Running build at {url}");
 
-    let mut request = client.post(&url);
-    if let Some(token) = non_empty(project.authentication_token.as_deref()) {
-        request = request.query(&[("token", token)]);
-        if let Some(cause) = non_empty(project.cause_text.as_deref()) {
-            request = request.query(&[("cause", cause)]);
-        }
-    }
+    let request = with_build_authentication(client.post(&url), project);
     upload_string(&credentials, request).await?;
     log::info!("Done running build");
     Ok(())
@@ -688,13 +706,7 @@ pub async fn stop_build(
     let url = concat_urls(&rebase_url(&project.url, server), &["lastBuild/stop"]);
     log::info!("Stopping build at {url}");
 
-    let mut request = client.post(&url);
-    if let Some(token) = non_empty(project.authentication_token.as_deref()) {
-        request = request.query(&[("token", token)]);
-        if let Some(cause) = non_empty(project.cause_text.as_deref()) {
-            request = request.query(&[("cause", cause)]);
-        }
-    }
+    let request = with_build_authentication(client.post(&url), project);
     upload_string(&credentials, request).await?;
     log::info!("Done stopping build");
     Ok(())
@@ -1133,13 +1145,7 @@ pub async fn trigger_build_parameters(
     let url = concat_urls(&rebase_url(&project.url, server), &["buildWithParameters"]);
     log::info!("Running parameterized build at {url}");
 
-    let mut request = client.post(&url).form(params);
-    if let Some(token) = non_empty(project.authentication_token.as_deref()) {
-        request = request.query(&[("token", token)]);
-        if let Some(cause) = non_empty(project.cause_text.as_deref()) {
-            request = request.query(&[("cause", cause)]);
-        }
-    }
+    let request = with_build_authentication(client.post(&url).form(params), project);
     // Jenkins answers 201 Created with the queue item location; `.form()`
     // sends the values as `application/x-www-form-urlencoded` body like
     // `curl --data` in the reference script.

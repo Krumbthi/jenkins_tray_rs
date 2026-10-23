@@ -53,6 +53,18 @@ export component SettingsWindow inherits Window {
 
     changed selected-server => { root.server-selection-changed(self.selected-server); }
 
+    // Keep the keyboard cursor visible in the project list: when it moves
+    // below or above the viewport, scroll the list. `content-y` is negative
+    // when scrolled down.
+    function ensure-project-visible(index: int) {
+        if (index < 0) { return; }
+        if (26px * (index + 1) > -prj-list.content-y + prj-list.visible-height) {
+            prj-list.content-y = prj-list.visible-height - 26px * (index + 1);
+        } else if (26px * index < -prj-list.content-y) {
+            prj-list.content-y = -26px * index;
+        }
+    }
+
     TabWidget {
         // -------------------------------------------------------------------
         // Servers and projects
@@ -140,13 +152,16 @@ export component SettingsWindow inherits Window {
                                     if (event.text == Key.DownArrow) {
                                         if (root.selected-project + 1 < root.projects.length) {
                                             root.selected-project += 1;
+                                            ensure-project-visible(root.selected-project);
                                         }
                                         accept
                                     } else if (event.text == Key.UpArrow) {
                                         if (root.selected-project > 0) {
                                             root.selected-project -= 1;
+                                            ensure-project-visible(root.selected-project);
                                         } else if (root.selected-project == -1 && root.projects.length > 0) {
                                             root.selected-project = 0;
+                                            ensure-project-visible(root.selected-project);
                                         }
                                         accept
                                     } else if (event.text == Key.Space
@@ -159,7 +174,7 @@ export component SettingsWindow inherits Window {
                                         reject
                                     }
                                 }
-                                ListView {
+                                prj-list := ListView {
                                     vertical-stretch: 1;
                                     for p[i] in root.projects: project-row := Rectangle {
                                         height: 26px;

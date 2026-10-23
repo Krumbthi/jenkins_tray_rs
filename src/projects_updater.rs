@@ -186,8 +186,12 @@ impl UpdateLoop {
         let mut join_set = tokio::task::JoinSet::new();
 
         for server in &config.servers {
+            // One shared snapshot per server: cloning the whole `Server` for
+            // every project would copy its complete project list once per
+            // project, i.e. quadratically in the number of projects.
+            let server = Arc::new(server.clone());
             for project in &server.projects {
-                let client = self.clients.for_server(server).clone();
+                let client = self.clients.for_server(&server).clone();
                 let server = server.clone();
                 let project = project.clone();
                 let cache = self.cache.clone();

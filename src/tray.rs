@@ -623,9 +623,7 @@ mod tests {
             pixels[center + 1],
             pixels[center + 2],
             pixels[center + 3],
-        ] else {
-            panic!("slice must be 4 bytes");
-        };
+        ];
         assert_eq!([r, g, b, a], [0xe5, 0x39, 0x35, 255]);
     }
 }

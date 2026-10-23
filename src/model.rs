@@ -223,29 +223,37 @@ impl std::fmt::Display for BuildStatusEnum {
     }
 }
 
+impl BuildStatusEnum {
+    /// Total-order rank for the port of the original's hand-written `cmp`
+    /// (used by `is_worse`, the tray icon's "worst status" reduction and the
+    /// `>= Indeterminate` acknowledgement threshold).
+    ///
+    /// The original match was not a total order: `(Unstable, _) => Less`
+    /// contradicted `(Successful, _) => Less` and `(Unknown, _) => Less`, so
+    /// `Unstable` compared `Less` in *both* directions against `Successful`
+    /// and `Unknown`. Every other pair was consistent; this rank keeps those
+    /// relations and resolves the contradictions by dropping the
+    /// `unstable < everything` claim, which is also the only reading that
+    /// agrees with `treat_as_failure` (unstable builds are failures).
+    ///
+    /// Ascending: successful < unknown < unstable < disabled < aborted <
+    /// indeterminate < failed.
+    fn severity(self) -> u8 {
+        match self {
+            BuildStatusEnum::Successful => 0,
+            BuildStatusEnum::Unknown => 1,
+            BuildStatusEnum::Unstable => 2,
+            BuildStatusEnum::Disabled => 3,
+            BuildStatusEnum::Aborted => 4,
+            BuildStatusEnum::Indeterminate => 5,
+            BuildStatusEnum::Failed => 6,
+        }
+    }
+}
+
 impl Ord for BuildStatusEnum {
     fn cmp(&self, other: &Self) -> Ordering {
-        match (self, other) {
-            (BuildStatusEnum::Failed, BuildStatusEnum::Failed) => Ordering::Equal,
-            (BuildStatusEnum::Failed, _) => Ordering::Greater,
-            (_, BuildStatusEnum::Failed) => Ordering::Less,
-            (BuildStatusEnum::Unstable, BuildStatusEnum::Unstable) => Ordering::Equal,
-            (BuildStatusEnum::Unstable, _) => Ordering::Less,
-            (BuildStatusEnum::Indeterminate, BuildStatusEnum::Indeterminate) => Ordering::Equal,
-            (BuildStatusEnum::Indeterminate, _) => Ordering::Greater,
-            (_, BuildStatusEnum::Indeterminate) => Ordering::Less,
-            (BuildStatusEnum::Aborted, BuildStatusEnum::Aborted) => Ordering::Equal,
-            (BuildStatusEnum::Aborted, _) => Ordering::Greater,
-            (_, BuildStatusEnum::Aborted) => Ordering::Less,
-            (BuildStatusEnum::Successful, BuildStatusEnum::Successful) => Ordering::Equal,
-            (BuildStatusEnum::Successful, _) => Ordering::Less,
-            (_, BuildStatusEnum::Successful) => Ordering::Greater,
-            (BuildStatusEnum::Disabled, BuildStatusEnum::Disabled) => Ordering::Equal,
-            (BuildStatusEnum::Disabled, _) => Ordering::Greater,
-            (_, BuildStatusEnum::Disabled) => Ordering::Less,
-            (BuildStatusEnum::Unknown, BuildStatusEnum::Unknown) => Ordering::Equal,
-            (BuildStatusEnum::Unknown, _) => Ordering::Less,
-        }
+        self.severity().cmp(&other.severity())
     }
 }
 
@@ -467,5 +475,42 @@ impl Default for GeneralSettings {
             check_for_updates: true,
             start_with_windows: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_ordering_is_total_and_keeps_the_thresholds() {
+        use BuildStatusEnum::*;
+
+        let ascending = [
+            Successful,
+            Unknown,
+            Unstable,
+            Disabled,
+            Aborted,
+            Indeterminate,
+            Failed,
+        ];
+        for pair in ascending.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "{:?} should sort before {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+
+        // Thresholds of the grid/tray code: "worse than successful" (the
+        // details/tooltip counts and the regression check), "at least
+        // indeterminate" (ack status eligibility) and "failed".
+        assert!(Unknown > Successful);
+        assert!(Unstable > Successful);
+        assert!(Unknown < Indeterminate);
+        assert!(Failed > Indeterminate);
+        assert!(Indeterminate > Aborted);
     }
 }

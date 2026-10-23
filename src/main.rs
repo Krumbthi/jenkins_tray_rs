@@ -847,6 +847,44 @@ fn populate_project_list(
     Ok(())
 }
 
+/// Removes the server at `index`, reloads the settings dialog and refreshes the
+/// main window. Called from the message box's "Yes" handler after the user
+/// confirmed the removal.
+fn remove_server_at(
+    services: &Services,
+    ui: &slint::Weak<AppWindow>,
+    settings_window: &slint::Weak<SettingsWindow>,
+    index: usize,
+) {
+    let config = match services.config.get_config() {
+        Ok(config) => config,
+        Err(e) => {
+            log::error!("Could not read the configuration: {e}");
+            return;
+        }
+    };
+    let Some(server) = config.servers.get(index) else {
+        return;
+    };
+    if let Err(e) = services.config.remove_server(server) {
+        log::error!("Could not remove the server: {e}");
+        return;
+    }
+    lock_state(&services.state)
+        .settings_projects
+        .remove(&server.url);
+    if let Some(settings) = settings_window.upgrade() {
+        // The removed server's project list is gone; drop the cursor.
+        settings.set_selected_project(-1);
+        if let Err(e) = populate_settings(services, &settings) {
+            log::error!("Could not reload the settings dialog: {e}");
+        }
+    }
+    if let Some(ui) = ui.upgrade() {
+        on_configuration_updated(services, &ui);
+    }
+}
+
 /// Stores the sound paths of the notification settings, skipping empty ones.
 fn set_sound_path(paths: &mut HashMap<String, String>, key: &str, value: String) {
     if value.trim().is_empty() {
@@ -911,13 +949,24 @@ fn open_url(url: &str) {
     }
 }
 
-/// Action to run when the message box's "Yes" button is pressed (original:
-/// `ApplicationUpdateHandler`'s Yes branch: open the installer page and exit).
-/// OK-only boxes never register one.
-static MESSAGE_BOX_YES_ACTION: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None);
+/// What the message box's "Yes" button runs.
+enum MessageBoxAction {
+    /// A boxed action (original: `ApplicationUpdateHandler`'s Yes branch: open
+    /// the installer page and exit). OK-only boxes never register one.
+    Run(Box<dyn Fn() + Send>),
+    /// Remove the server at the index after the "Remove server?" confirmation.
+    /// The removal runs on the UI thread, where the full `Services` bundle is
+    /// available (it is not `Send`, so it cannot be captured by the boxed
+    /// action).
+    RemoveServer(usize),
+}
+
+/// Action to run when the message box's "Yes" button is pressed. `None` for
+/// OK-only boxes and after the box was dismissed.
+static MESSAGE_BOX_YES_ACTION: Mutex<Option<MessageBoxAction>> = Mutex::new(None);
 
 /// Takes (and clears) the pending "Yes" action, if any.
-fn take_message_box_yes_action() -> Option<Box<dyn Fn() + Send>> {
+fn take_message_box_yes_action() -> Option<MessageBoxAction> {
     MESSAGE_BOX_YES_ACTION
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -934,36 +983,31 @@ fn take_message_box_yes_action() -> Option<Box<dyn Fn() + Send>> {
 /// of an earlier Yes/No box.
 fn show_message_box(message_box: &slint::Weak<MessageBoxWindow>, caption: &str, message: &str) {
     drop(take_message_box_yes_action());
-    let message_box = message_box.clone();
-    let caption = caption.to_string();
-    let message = message.to_string();
-    if let Err(e) = slint::invoke_from_event_loop(move || {
-        let Some(message_box) = message_box.upgrade() else {
-            return;
-        };
-        message_box.set_caption(caption.into());
-        message_box.set_message(message.into());
-        message_box.set_yes_no(false);
-        if let Err(e) = message_box.show() {
-            log::error!("Could not show the message box: {e}");
-        }
-    }) {
-        log::error!("Could not schedule the message box: {e}");
-    }
+    show_message_box_with(message_box, caption, message, false);
 }
 
-/// Shows a Yes/No message box; `on_yes` runs when the user presses "Yes"
-/// (original: XtraMessageBox with MessageBoxButtons.YesNo - used by the
-/// `ApplicationUpdateHandler` prompt).
+/// Shows a Yes/No message box; `action` runs when the user presses "Yes"
+/// (original: XtraMessageBox with MessageBoxButtons.YesNo).
 fn show_yes_no_message_box(
     message_box: &slint::Weak<MessageBoxWindow>,
     caption: &str,
     message: &str,
-    on_yes: Box<dyn Fn() + Send>,
+    action: MessageBoxAction,
 ) {
     *MESSAGE_BOX_YES_ACTION
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(on_yes);
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(action);
+    show_message_box_with(message_box, caption, message, true);
+}
+
+/// Schedules the message box on the UI thread; `yes_no` selects the button
+/// pair.
+fn show_message_box_with(
+    message_box: &slint::Weak<MessageBoxWindow>,
+    caption: &str,
+    message: &str,
+    yes_no: bool,
+) {
     let message_box = message_box.clone();
     let caption = caption.to_string();
     let message = message.to_string();
@@ -973,7 +1017,7 @@ fn show_yes_no_message_box(
         };
         message_box.set_caption(caption.into());
         message_box.set_message(message.into());
-        message_box.set_yes_no(true);
+        message_box.set_yes_no(yes_no);
         if let Err(e) = message_box.show() {
             log::error!("Could not show the message box: {e}");
         }
@@ -1618,37 +1662,35 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
         });
     }
 
-    // "Remove server" (original: RemoveSelectedServer).
+    // "Remove server" (original: RemoveSelectedServer). Asks for confirmation
+    // first; the actual removal runs from the message box's Yes handler (see
+    // `on_accepted` below) because `Services` is not `Send` and therefore
+    // cannot live inside the message box's boxed action.
     {
         let services = services.clone();
-        let ui = ui.as_weak();
-        let settings = windows.settings.as_weak();
+        let message_box = windows.message_box.as_weak();
         windows.settings.on_remove_server(move |index| {
-            let config = match services.config.get_config() {
-                Ok(config) => config,
-                Err(e) => {
-                    log::error!("Could not read the configuration: {e}");
-                    return;
-                }
-            };
-            let Some(server) = config.servers.get(index as usize) else {
-                return;
-            };
-            if let Err(e) = services.config.remove_server(server) {
-                log::error!("Could not remove the server: {e}");
+            if index < 0 {
                 return;
             }
-            lock_state(&services.state)
-                .settings_projects
-                .remove(&server.url);
-            if let Some(settings) = settings.upgrade()
-                && let Err(e) = populate_settings(&services, &settings)
-            {
-                log::error!("Could not reload the settings dialog: {e}");
-            }
-            if let Some(ui) = ui.upgrade() {
-                on_configuration_updated(&services, &ui);
-            }
+            let name = services
+                .config
+                .get_config()
+                .ok()
+                .and_then(|config| config.servers.get(index as usize).cloned())
+                .map(|server| server_display_text(&server))
+                .unwrap_or_default();
+            let message = format!(
+                "Do you really want to remove the server \"{name}\"?\n\n\
+                 Its projects will no longer be monitored."
+            );
+            // The actual removal is dispatched from `on_accepted`.
+            show_yes_no_message_box(
+                &message_box,
+                "Remove server",
+                &message,
+                MessageBoxAction::RemoveServer(index as usize),
+            );
         });
     }
 
@@ -1659,6 +1701,8 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
         let settings = windows.settings.as_weak();
         windows.settings.on_server_selection_changed(move |index| {
             let settings = settings.unwrap();
+            // The keyboard cursor belongs to the previously shown list.
+            settings.set_selected_project(-1);
             if let Err(e) = populate_project_list(&services.config, &settings, &services.state, index)
             {
                 log::error!("Could not load the project list: {e}");
@@ -2205,11 +2249,19 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
 
     {
         let message_box = windows.message_box.as_weak();
+        let services = services.clone();
+        let ui = ui.as_weak();
+        let settings_window = windows.settings.as_weak();
         windows.message_box.on_accepted(move || {
-            // A registered action means this is the update prompt's "Yes"
-            // (original: ApplicationUpdateHandler accepts the new version).
-            if let Some(action) = take_message_box_yes_action() {
-                action();
+            match take_message_box_yes_action() {
+                // Confirmed "Remove server?".
+                Some(MessageBoxAction::RemoveServer(index)) => {
+                    remove_server_at(&services, &ui, &settings_window, index);
+                }
+                // The update prompt's "Yes" (original: ApplicationUpdateHandler
+                // accepts the new version).
+                Some(MessageBoxAction::Run(action)) => action(),
+                None => {}
             }
             if let Err(e) = message_box.unwrap().hide() {
                 log::error!("Could not close the message box: {e}");
@@ -2220,8 +2272,12 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
     {
         let message_box = windows.message_box.as_weak();
         windows.message_box.on_declined(move || {
-            if take_message_box_yes_action().is_some() {
-                log::info!("Update refused by user");
+            match take_message_box_yes_action() {
+                Some(MessageBoxAction::RemoveServer(_)) => {
+                    log::info!("Server removal cancelled by user");
+                }
+                Some(MessageBoxAction::Run(_)) => log::info!("Update refused by user"),
+                None => {}
             }
             if let Err(e) = message_box.unwrap().hide() {
                 log::error!("Could not close the message box: {e}");
@@ -2395,14 +2451,14 @@ fn main() -> Result<()> {
                 &message_box,
                 "Jenkins Tray updates",
                 &message,
-                Box::new(move || {
+                MessageBoxAction::Run(Box::new(move || {
                     log::info!("Update accepted by user");
                     open_url(&installer_url);
                     // original: Application.Exit()
                     if let Err(e) = slint::quit_event_loop() {
                         log::error!("Could not quit the event loop: {e}");
                     }
-                }),
+                })),
             );
         }
     }));

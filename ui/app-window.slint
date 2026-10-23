@@ -7,7 +7,8 @@
 //! key / Return / Menu key navigation and the "Last check:" status bar.
 
 import { Button, ListView } from "std-widgets.slint";
-import { ProjectRow, Ui, TableHeader, ProjectRowView } from "common.slint";
+import { ProjectRow, TableHeader, ProjectRowView } from "common.slint";
+import { Theme } from "theme.slint";
 import { AppVersion } from "version.slint";
 import { SettingsWindow } from "settings.slint";
 import { EditServerWindow } from "edit-server.slint";
@@ -26,6 +27,7 @@ export component AppWindow inherits Window {
     min-width: 700px;
     preferred-height: 460px;
     min-height: 320px;
+    background: Theme.surface;
 
     // Project rows (server group headers + projects), filled from Rust.
     in-out property <[ProjectRow]> rows;
@@ -76,15 +78,27 @@ export component AppWindow inherits Window {
     forward-focus: grid-key;
 
     VerticalLayout {
+        // Thin brand gradient along the top edge.
+        Rectangle {
+            height: 3px;
+            background: Theme.accent-gradient;
+        }
+
         // --- Toolbar (original: DevExpress main menu bar) ---
         Rectangle {
-            height: 30px;
-            background: Ui.bar-bg;
-            border-width: 1px;
-            border-color: Ui.line;
+            height: 36px;
+            background: Theme.toolbar-gradient;
+            // Hairline instead of a full border, so the bar reads as part of
+            // the window chrome.
+            Rectangle {
+                y: parent.height - 1px;
+                width: parent.width;
+                height: 1px;
+                background: Theme.border;
+            }
             HorizontalLayout {
-                padding: 3px;
-                spacing: 4px;
+                padding: 5px;
+                spacing: 6px;
                 Button {
                     text: @tr("Settings");
                     width: 90px;
@@ -120,7 +134,7 @@ export component AppWindow inherits Window {
         // --- Projects grid (original: projectsGridControl) ---
         grid-area := Rectangle {
             vertical-stretch: 1;
-            background: #ffffff;
+            background: Theme.surface;
 
             if (root.rows.length == 0) : Text {
                 x: 12px;
@@ -128,7 +142,7 @@ export component AppWindow inherits Window {
                 width: parent.width - 24px;
                 height: parent.height - 24px;
                 text: @tr("No Jenkins servers or projects configured.\nUse \"Settings\" to add a server.");
-                color: #808080;
+                color: Theme.text-subtle;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
@@ -169,6 +183,7 @@ export component AppWindow inherits Window {
                         for item[i] in root.rows: delegate := ProjectRowView {
                             project-row: item;
                             show-claim-columns: root.integrate-claim;
+                            alternate: Math.mod(i, 2) == 1;
                             selected: i == root.selected-row && !item.is-header;
                             clicked => {
                                 root.selected-row = i;
@@ -278,27 +293,33 @@ export component AppWindow inherits Window {
 
         // --- Status bar (original: bar3 with "Last check: ...") ---
         Rectangle {
-            height: 26px;
-            background: Ui.bar-bg;
-            border-width: 1px;
-            border-color: Ui.line;
+            height: 28px;
+            background: Theme.status-gradient;
+            // Hairline above the status bar.
+            Rectangle {
+                y: 0;
+                width: parent.width;
+                height: 1px;
+                background: Theme.border;
+            }
             Text {
-                x: 8px;
-                width: parent.width / 2 - 12px;
+                x: 10px;
+                width: parent.width / 2 - 14px;
                 height: parent.height;
                 text: root.last-check;
+                color: Theme.text-muted;
                 vertical-alignment: center;
                 overflow: elide;
             }
             Text {
                 x: parent.width / 2;
-                width: parent.width / 2 - 10px;
+                width: parent.width / 2 - 12px;
                 height: parent.height;
                 text: root.status-text;
                 horizontal-alignment: right;
                 vertical-alignment: center;
                 overflow: elide;
-                color: #606060;
+                color: Theme.text-muted;
             }
         }
     }

@@ -5,6 +5,7 @@
 //! builds).
 
 import { Button, CheckBox, ComboBox, LineEdit, ListView, TextEdit } from "std-widgets.slint";
+import { Theme } from "theme.slint";
 
 /// Generic message box (original: `XtraMessageBox.Show(message, caption)`
 /// with `MessageBoxButtons.OK`, and `MessageBoxButtons.YesNo` for the update
@@ -25,6 +26,7 @@ export component MessageBoxWindow inherits Window {
     min-width: 320px;
     preferred-height: 170px;
     min-height: 120px;
+    background: Theme.window-gradient;
 
     VerticalLayout {
         padding: 14px;
@@ -69,6 +71,7 @@ export component AuthTokenWindow inherits Window {
     max-width: 380px;
     min-height: 190px;
     max-height: 190px;
+    background: Theme.window-gradient;
 
     in-out property <string> token;
     in-out property <string> cause;
@@ -118,6 +121,7 @@ export component ClaimBuildWindow inherits Window {
     max-width: 430px;
     min-height: 230px;
     max-height: 230px;
+    background: Theme.window-gradient;
 
     in property <string> claim-label: @tr("Claim build:");
     in-out property <string> reason;
@@ -214,6 +218,7 @@ export component BuildParamsWindow inherits Window {
     min-width: 440px;
     preferred-height: 430px;
     min-height: 320px;
+    background: Theme.window-gradient;
 
     VerticalLayout {
         padding: 12px;
@@ -240,7 +245,7 @@ export component BuildParamsWindow inherits Window {
                     width: parent.width;
                     height: 15px;
                     text: p.description;
-                    color: #606060;
+                    color: Theme.text-subtle;
                     font-size: 11px;
                     overflow: elide;
                 }

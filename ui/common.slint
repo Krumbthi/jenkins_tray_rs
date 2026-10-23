@@ -2,6 +2,8 @@
 //! Jenkins Tray UI. Migrated from the original C# WinForms application
 //! (MainForm grid, status icons, column layout).
 
+import { Theme } from "theme.slint";
+
 // ---------------------------------------------------------------------------
 // Data structures filled in from Rust
 // ---------------------------------------------------------------------------
@@ -53,20 +55,19 @@ export struct ProjectCheckRow {
 // ---------------------------------------------------------------------------
 
 export global Ui {
-    // Main grid columns (mirrors the original grid column widths)
+    // Main grid columns (mirrors the original grid column widths). These are
+    // live values: the resize handles in the table header write to them, so
+    // the header and every row stay aligned while a column is being widened
+    // to read a long value.
     in-out property <length> col-status: 46px;
     in-out property <length> col-project: 156px;
     in-out property <length> col-details: 196px;
     in-out property <length> col-build: 124px;
+    in-out property <length> col-success: 124px;
+    in-out property <length> col-failure: 124px;
     in-out property <length> col-user: 76px;
     in-out property <length> col-claimed: 92px;
     in-out property <length> col-reason: 128px;
-
-    in-out property <color> selection: #cce4f7;
-    in-out property <color> hover: #eaf3fc;
-    in-out property <color> bar-bg: #f5f5f5;
-    in-out property <color> line: #d9d9d9;
-    in-out property <color> group-bg: #ededed;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,15 +82,25 @@ export component StatusBall inherits Rectangle {
     width: 16px;
     height: 16px;
     border-radius: self.width / 2;
-    background: status-kind == "failed" ? #e53935
-        : status-kind == "success" ? #439fe0
-        : status-kind == "unstable" ? #fb8c00
-        : status-kind == "aborted" ? #9e9e9e
-        : status-kind == "disabled" ? #616161
-        : status-kind == "indeterminate" ? #bdbdbd
-        : #8e24aa;
+    background: status-kind == "failed" ? @linear-gradient(145deg, #f4776f 0%, #d92d20 100%)
+        : status-kind == "success" ? @linear-gradient(145deg, #63b3f5 0%, #2f6feb 100%)
+        : status-kind == "unstable" ? @linear-gradient(145deg, #fbc65e 0%, #e58e00 100%)
+        : status-kind == "aborted" ? @linear-gradient(145deg, #c1c9d4 0%, #8a94a4 100%)
+        : status-kind == "disabled" ? @linear-gradient(145deg, #7f8999 0%, #4f5866 100%)
+        : status-kind == "indeterminate" ? @linear-gradient(145deg, #e2e8f0 0%, #b9c3d1 100%)
+        : @linear-gradient(145deg, #c09aef 0%, #8654c7 100%);
     border-width: stuck ? 3px : 1px;
-    border-color: stuck ? #000000 : #ffffffcc;
+    border-color: stuck ? Theme.text : #ffffffcc;
+
+    // Glossy highlight for a slightly more polished, three-dimensional ball.
+    Rectangle {
+        x: 3px;
+        y: 2px;
+        width: parent.width - 6px;
+        height: parent.height / 2 - 2px;
+        border-radius: self.width / 2;
+        background: #ffffff40;
+    }
 
     // Pulsing ring while a build is in progress (replaces the animated GIF)
     if (in-progress) : Rectangle {
@@ -113,12 +124,61 @@ export component StatusBall inherits Rectangle {
 // Grid cells
 // ---------------------------------------------------------------------------
 
+/// Draggable divider sitting on the right edge of a column header. Dragging
+/// it reports the new column width to the parent, which stores it in the
+/// shared `Ui` global so that the header and all rows resize together.
+component ColumnResizer inherits Rectangle {
+    in property <length> column-width;
+    in property <length> min-column-width: 40px;
+    callback resized(width: length);
+
+    property <length> drag-start-width: 0px;
+    property <length> drag-start-pointer-x: 0px;
+    property <bool> dragging: false;
+
+    // Kept inside the cell so the neighbouring header cell cannot cover the
+    // hit area; the visible highlight is centered on the boundary. The
+    // position is supplied by the parent (a component root cannot read
+    // `parent`).
+    width: 6px;
+    background: root.dragging ? Theme.accent.with-alpha(0.85)
+        : touch.has-hover ? Theme.accent.with-alpha(0.4)
+        : transparent;
+
+    touch := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        mouse-cursor: MouseCursor.col-resize;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down
+                && event.button == PointerEventButton.left) {
+                root.dragging = true;
+                root.drag-start-width = root.column-width;
+                // Window coordinates: `absolute-position` follows the cell
+                // while it grows, `mouse-x` compensates, so their sum is the
+                // stationary pointer position.
+                root.drag-start-pointer-x = root.absolute-position.x + touch.mouse-x;
+            } else if (event.kind == PointerEventKind.move && root.dragging) {
+                root.resized(Math.max(root.min-column-width,
+                    root.drag-start-width
+                        + (root.absolute-position.x + touch.mouse-x)
+                        - root.drag-start-pointer-x));
+            } else if (event.kind == PointerEventKind.up
+                    || event.kind == PointerEventKind.cancel) {
+                root.dragging = false;
+            }
+        }
+    }
+}
+
 component CellText inherits Rectangle {
     in property <string> cell-text;
     in property <length> cell-width;
     in property <bool> align-right: false;
     in property <bool> bold: false;
-    in property <color> foreground: #000000;
+    in property <color> foreground: Theme.text;
+    in property <bool> resizable: false;
+    callback resized(width: length);
 
     width: cell-width;
 
@@ -134,6 +194,14 @@ component CellText inherits Rectangle {
         vertical-alignment: center;
         overflow: elide;
     }
+
+    if (root.resizable) : ColumnResizer {
+        x: root.width - self.width;
+        y: 0;
+        height: root.height;
+        column-width: root.cell-width;
+        resized(width) => { root.resized(width); }
+    }
 }
 
 /// One clickable column header (original: DevExpress column header; clicking
@@ -144,7 +212,9 @@ component HeaderCell inherits Rectangle {
     in property <length> cell-width;
     in property <bool> align-right: false;
     in property <bool> bold: false;
+    in property <bool> resizable: true;
     callback clicked();
+    callback resized(width: length);
 
     width: cell-width;
 
@@ -154,7 +224,8 @@ component HeaderCell inherits Rectangle {
         width: parent.width - 12px;
         height: parent.height;
         text: root.caption + root.glyph;
-        font-weight: root.bold ? 700 : 400;
+        color: root.bold ? Theme.text : Theme.text-muted;
+        font-weight: root.bold ? 700 : 600;
         horizontal-alignment: root.align-right ? right : left;
         vertical-alignment: center;
         overflow: elide;
@@ -164,6 +235,14 @@ component HeaderCell inherits Rectangle {
         width: parent.width;
         height: parent.height;
         clicked => { root.clicked(); }
+    }
+
+    if (root.resizable) : ColumnResizer {
+        x: root.width - self.width;
+        y: 0;
+        height: root.height;
+        column-width: root.cell-width;
+        resized(width) => { root.resized(width); }
     }
 }
 
@@ -184,25 +263,32 @@ export component TableHeader inherits Rectangle {
             : ""
     }
 
-    height: 24px;
-    background: Ui.bar-bg;
+    height: 28px;
+    background: Theme.header-gradient;
     border-width: 1px;
-    border-color: Ui.line;
+    border-color: Theme.border;
 
     HorizontalLayout {
-        CellText { cell-text: ""; cell-width: Ui.col-status; }
+        CellText {
+            cell-text: "";
+            cell-width: Ui.col-status;
+            resizable: true;
+            resized(width) => { Ui.col-status = width; }
+        }
         HeaderCell {
             caption: "Project";
             glyph: root.glyph(1);
             cell-width: Ui.col-project;
             bold: true;
             clicked => { root.column-clicked(1); }
+            resized(width) => { Ui.col-project = width; }
         }
         HeaderCell {
             caption: "Details";
             glyph: root.glyph(2);
             cell-width: Ui.col-details;
             clicked => { root.column-clicked(2); }
+            resized(width) => { Ui.col-details = width; }
         }
         HeaderCell {
             caption: "Last build";
@@ -210,25 +296,51 @@ export component TableHeader inherits Rectangle {
             cell-width: Ui.col-build;
             align-right: true;
             clicked => { root.column-clicked(3); }
+            resized(width) => { Ui.col-build = width; }
         }
         HeaderCell {
             caption: "Last success";
             glyph: root.glyph(4);
-            cell-width: Ui.col-build;
+            cell-width: Ui.col-success;
             align-right: true;
             clicked => { root.column-clicked(4); }
+            resized(width) => { Ui.col-success = width; }
         }
         HeaderCell {
             caption: "Last failure";
             glyph: root.glyph(5);
-            cell-width: Ui.col-build;
+            cell-width: Ui.col-failure;
             align-right: true;
             clicked => { root.column-clicked(5); }
+            resized(width) => { Ui.col-failure = width; }
         }
-        CellText { cell-text: "Last failure user"; cell-width: Ui.col-user; }
-        if (root.show-claim-columns) : CellText { cell-text: "Claimed by"; cell-width: Ui.col-claimed; }
-        if (root.show-claim-columns) : CellText { cell-text: "Claim reason"; cell-width: Ui.col-reason; }
+        CellText {
+            cell-text: "Last failure user";
+            cell-width: Ui.col-user;
+            resizable: true;
+            resized(width) => { Ui.col-user = width; }
+        }
+        if (root.show-claim-columns) : CellText {
+            cell-text: "Claimed by";
+            cell-width: Ui.col-claimed;
+            resizable: true;
+            resized(width) => { Ui.col-claimed = width; }
+        }
+        if (root.show-claim-columns) : CellText {
+            cell-text: "Claim reason";
+            cell-width: Ui.col-reason;
+            resizable: true;
+            resized(width) => { Ui.col-reason = width; }
+        }
         Rectangle { horizontal-stretch: 1; }
+    }
+
+    // Slim accent rule that separates the header from the grid.
+    Rectangle {
+        y: parent.height - 2px;
+        width: parent.width;
+        height: 2px;
+        background: Theme.accent-gradient;
     }
 }
 
@@ -237,6 +349,8 @@ export component ProjectRowView inherits Rectangle {
     in property <ProjectRow> project-row;
     in property <bool> selected: false;
     in property <bool> show-claim-columns: false;
+    // Zebra striping, driven by the delegate index in the main window.
+    in property <bool> alternate: false;
 
     callback clicked();
     callback double-clicked();
@@ -246,18 +360,38 @@ export component ProjectRowView inherits Rectangle {
     // itself; the parent forwards it to `ContextMenuArea.show()`.
     callback context-menu-requested(position: Point);
 
-    height: project-row.is-header ? 24px : 26px;
-    background: project-row.is-header ? Ui.group-bg
-        : selected ? Ui.selection
-        : touch.has-hover ? Ui.hover
-        : #ffffff;
+    height: 28px;
+    background: project-row.is-header ? Theme.group-gradient
+        : selected ? Theme.selection
+        : touch.has-hover ? Theme.hover
+        : root.alternate ? Theme.surface-alt
+        : Theme.surface;
+
+    // Accent cue on the left edge: soft for server headers, bright for the
+    // selected project row.
+    if (project-row.is-header) : Rectangle {
+        x: 0;
+        y: 0;
+        width: 3px;
+        height: parent.height;
+        background: Theme.accent-line;
+    }
+    if (selected && !project-row.is-header) : Rectangle {
+        x: 0;
+        y: 0;
+        width: 3px;
+        height: parent.height;
+        background: Theme.accent-gradient;
+    }
 
     if (project-row.is-header) : Text {
-        x: 6px;
-        width: parent.width - 12px;
+        x: 14px;
+        width: parent.width - 20px;
         height: parent.height;
         text: project-row.server;
+        color: Theme.text;
         font-weight: 700;
+        letter-spacing: 0.4px;
         vertical-alignment: center;
         overflow: elide;
     }
@@ -276,8 +410,8 @@ export component ProjectRowView inherits Rectangle {
         CellText { cell-text: project-row.name; cell-width: Ui.col-project; bold: true; }
         CellText { cell-text: project-row.details; cell-width: Ui.col-details; }
         CellText { cell-text: project-row.last-build; cell-width: Ui.col-build; align-right: true; }
-        CellText { cell-text: project-row.last-success; cell-width: Ui.col-build; align-right: true; }
-        CellText { cell-text: project-row.last-failure; cell-width: Ui.col-build; align-right: true; }
+        CellText { cell-text: project-row.last-success; cell-width: Ui.col-success; align-right: true; }
+        CellText { cell-text: project-row.last-failure; cell-width: Ui.col-failure; align-right: true; }
         CellText { cell-text: project-row.last-failure-user; cell-width: Ui.col-user; }
         if (root.show-claim-columns) : CellText { cell-text: project-row.claimed-by; cell-width: Ui.col-claimed; }
         if (root.show-claim-columns) : CellText { cell-text: project-row.claim-reason; cell-width: Ui.col-reason; }
@@ -290,7 +424,7 @@ export component ProjectRowView inherits Rectangle {
         y: parent.height - 1px;
         width: parent.width;
         height: 1px;
-        background: Ui.line;
+        background: Theme.border.with-alpha(0.55);
         visible: !project-row.is-header;
     }
 

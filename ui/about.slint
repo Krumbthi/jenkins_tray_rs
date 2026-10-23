@@ -1,5 +1,7 @@
 //! About dialog - migrated from the original C# `JenkinsTray.UI.AboutForm`.
 
+import { Theme } from "theme.slint";
+
 export component AboutWindow inherits Window {
     title: "About Jenkins Tray";
     preferred-width: 300px;
@@ -8,6 +10,7 @@ export component AboutWindow inherits Window {
     max-width: 300px;
     min-height: 210px;
     max-height: 210px;
+    background: Theme.window-gradient;
 
     in property <string> version: "Version -";
 
@@ -19,13 +22,21 @@ export component AboutWindow inherits Window {
 
         Text {
             text: @tr("Jenkins Tray");
-            font-size: 15px;
+            color: Theme.text;
+            font-size: 18px;
             font-weight: 700;
             horizontal-alignment: center;
         }
 
+        // Small brand rule under the title.
+        Rectangle {
+            height: 2px;
+            background: Theme.accent-gradient;
+        }
+
         Text {
             text: root.version;
+            color: Theme.text-muted;
             horizontal-alignment: center;
         }
 
@@ -42,7 +53,7 @@ export component AboutWindow inherits Window {
                 width: parent.width;
                 height: parent.height;
                 text: "https://github.com/Krumbthi/jenkins_tray_rs.git";
-                color: #0563c1;
+                color: Theme.link;
                 horizontal-alignment: center;
                 vertical-alignment: center;
                 font-size: 11px;
@@ -53,6 +64,7 @@ export component AboutWindow inherits Window {
 
         Text {
             text: @tr("Author: Thilo Krumbholz");
+            color: Theme.text-subtle;
             horizontal-alignment: center;
             font-size: 11px;
         }

@@ -1,0 +1,54 @@
+//! Central visual theme.
+//!
+//! A light, slightly "glassy" take on the Fluent look: cool off-white
+//! surfaces, a blue→teal accent, soft hairline borders and subtle gradients.
+//! All windows and reusable widgets pull their colors and radii from here so
+//! the look stays consistent (and can be adjusted in one place).
+
+export global Theme {
+    // --- Accent ---------------------------------------------------------
+    out property <color> accent: #2f6feb;
+    out property <color> accent-strong: #1e56c9;
+    out property <color> accent-2: #29b6c8;
+    out property <color> accent-soft: #e8f0ff;
+    out property <color> accent-line: #bfd3f7;
+    out property <color> on-accent: #ffffff;
+
+    // --- Surfaces -------------------------------------------------------
+    out property <color> window: #edf2f9;
+    out property <color> surface: #ffffff;
+    out property <color> surface-alt: #f7f9fd;
+    out property <color> surface-sunken: #e9eff8;
+    out property <color> hover: #eff5ff;
+    out property <color> selection: #d9e7ff;
+    out property <color> group: #e5edf9;
+
+    // --- Text -----------------------------------------------------------
+    out property <color> text: #1a2433;
+    out property <color> text-muted: #58677c;
+    out property <color> text-subtle: #8492a6;
+    out property <color> link: #2f6feb;
+
+    // --- Lines ----------------------------------------------------------
+    out property <color> border: #d6dfec;
+    out property <color> border-strong: #c2cedf;
+
+    // --- Radii ----------------------------------------------------------
+    out property <length> radius-sm: 4px;
+    out property <length> radius-md: 8px;
+    out property <length> radius-lg: 12px;
+
+    // --- Brushes --------------------------------------------------------
+    out property <brush> accent-gradient:
+        @linear-gradient(90deg, #2f6feb 0%, #29b6c8 100%);
+    out property <brush> toolbar-gradient:
+        @linear-gradient(180deg, #ffffff 0%, #f4f8fe 100%);
+    out property <brush> header-gradient:
+        @linear-gradient(180deg, #fafcff 0%, #edf3fb 100%);
+    out property <brush> status-gradient:
+        @linear-gradient(180deg, #f8fafe 0%, #eff4fb 100%);
+    out property <brush> group-gradient:
+        @linear-gradient(180deg, #eaf0fa 0%, #dfe8f5 100%);
+    out property <brush> window-gradient:
+        @linear-gradient(180deg, #fbfdff 0%, #eef3fa 100%);
+}

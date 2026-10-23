@@ -5,7 +5,8 @@
 //! and "General" (general options group).
 
 import { Button, CheckBox, GroupBox, LineEdit, ListView, SpinBox, TabWidget } from "std-widgets.slint";
-import { ServerRow, ProjectCheckRow, Ui } from "common.slint";
+import { ServerRow, ProjectCheckRow } from "common.slint";
+import { Theme } from "theme.slint";
 
 export component SettingsWindow inherits Window {
     title: "Jenkins Tray - Settings";
@@ -13,6 +14,7 @@ export component SettingsWindow inherits Window {
     min-width: 620px;
     preferred-height: 440px;
     min-height: 400px;
+    background: Theme.window-gradient;
 
     // --- "Servers and projects" tab ---
     in-out property <[ServerRow]> servers;
@@ -66,6 +68,11 @@ export component SettingsWindow inherits Window {
     }
 
     TabWidget {
+        // Inset the tab surface slightly so the soft window color frames it.
+        x: 8px;
+        y: 8px;
+        width: parent.width - 16px;
+        height: parent.height - 16px;
         // -------------------------------------------------------------------
         // Servers and projects
         // -------------------------------------------------------------------
@@ -102,17 +109,27 @@ export component SettingsWindow inherits Window {
                     // Servers list (original: ServerListControl)
                     Rectangle {
                         width: 280px;
+                        background: Theme.surface;
                         border-width: 1px;
-                        border-color: Ui.line;
+                        border-color: Theme.border;
+                        border-radius: Theme.radius-sm;
+                        clip: true;
                         ListView {
                             for s[i] in root.servers: server-row := Rectangle {
                                 height: 26px;
-                                background: i == root.selected-server ? Ui.selection
-                                    : srv-touch.has-hover ? Ui.hover
-                                    : #ffffff;
+                                background: i == root.selected-server ? Theme.selection
+                                    : srv-touch.has-hover ? Theme.hover
+                                    : (Math.mod(i, 2) == 1 ? Theme.surface-alt : Theme.surface);
+                                if (i == root.selected-server) : Rectangle {
+                                    x: 0;
+                                    y: 0;
+                                    width: 3px;
+                                    height: parent.height;
+                                    background: Theme.accent-gradient;
+                                }
                                 Text {
-                                    x: 6px;
-                                    width: parent.width - 12px;
+                                    x: 10px;
+                                    width: parent.width - 16px;
                                     height: parent.height;
                                     text: s.display;
                                     vertical-alignment: center;
@@ -131,8 +148,11 @@ export component SettingsWindow inherits Window {
                     // (original: ProjectListControl)
                     Rectangle {
                         horizontal-stretch: 1;
+                        background: Theme.surface;
                         border-width: 1px;
-                        border-color: Ui.line;
+                        border-color: Theme.border;
+                        border-radius: Theme.radius-sm;
+                        clip: true;
                         VerticalLayout {
                             HorizontalLayout {
                                 height: 30px;
@@ -178,9 +198,16 @@ export component SettingsWindow inherits Window {
                                     vertical-stretch: 1;
                                     for p[i] in root.projects: project-row := Rectangle {
                                         height: 26px;
-                                        background: i == root.selected-project ? Ui.selection
-                                            : prj-touch.has-hover ? Ui.hover
-                                            : #ffffff;
+                                        background: i == root.selected-project ? Theme.accent-soft
+                                            : prj-touch.has-hover ? Theme.hover
+                                            : (Math.mod(i, 2) == 1 ? Theme.surface-alt : Theme.surface);
+                                        if (i == root.selected-project) : Rectangle {
+                                            x: 0;
+                                            y: 0;
+                                            width: 3px;
+                                            height: parent.height;
+                                            background: Theme.accent-gradient;
+                                        }
                                         // The checkbox is drawn manually so that it always
                                         // stays in sync with the model rows.
                                         Rectangle {
@@ -189,14 +216,14 @@ export component SettingsWindow inherits Window {
                                             width: 14px;
                                             height: 14px;
                                             border-width: 1px;
-                                            border-color: #7a7a7a;
-                                            border-radius: 2px;
-                                            background: p.selected ? #3d7fbe : #ffffff;
+                                            border-color: p.selected ? Theme.accent : Theme.border-strong;
+                                            border-radius: 3px;
+                                            background: p.selected ? Theme.accent-gradient : Theme.surface;
                                             if (p.selected) : Text {
                                                 width: parent.width;
                                                 height: parent.height;
                                                 text: "\u{2713}";
-                                                color: #ffffff;
+                                                color: Theme.on-accent;
                                                 font-size: 11px;
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
@@ -236,7 +263,7 @@ export component SettingsWindow inherits Window {
                         vertical-alignment: center;
                         overflow: elide;
                         font-size: 11px;
-                        color: #606060;
+                        color: Theme.text-muted;
                     }
                 }
             }

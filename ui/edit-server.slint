@@ -3,6 +3,7 @@
 //! authentication, ignore untrusted certificate, OK/Cancel).
 
 import { Button, CheckBox, LineEdit } from "std-widgets.slint";
+import { Theme } from "theme.slint";
 
 export component EditServerWindow inherits Window {
     title: "Server settings";
@@ -12,6 +13,7 @@ export component EditServerWindow inherits Window {
     max-width: 430px;
     min-height: 300px;
     max-height: 300px;
+    background: Theme.window-gradient;
 
     in-out property <string> url;
     in-out property <string> display-name;
@@ -59,7 +61,7 @@ export component EditServerWindow inherits Window {
                 Text {
                     text: @tr("User name:");
                     vertical-alignment: center;
-                    color: root.auth-enabled ? #000000 : #a0a0a0;
+                    color: root.auth-enabled ? Theme.text : Theme.text-subtle;
                 }
                 LineEdit {
                     text <=> root.username;
@@ -70,7 +72,7 @@ export component EditServerWindow inherits Window {
                 Text {
                     text: @tr("Password:");
                     vertical-alignment: center;
-                    color: root.auth-enabled ? #000000 : #a0a0a0;
+                    color: root.auth-enabled ? Theme.text : Theme.text-subtle;
                 }
                 LineEdit {
                     text <=> root.password;

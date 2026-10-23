@@ -451,6 +451,10 @@ pub struct GeneralSettings {
     pub show_project_display_name: bool,
     /// If true, check for application updates at startup and hourly
     pub check_for_updates: bool,
+    /// If true, register the application in the Windows `Run` registry key
+    /// so it starts automatically when the user logs in. Ignored on non-Windows
+    /// platforms.
+    pub start_with_windows: bool,
 }
 
 impl Default for GeneralSettings {
@@ -461,6 +465,7 @@ impl Default for GeneralSettings {
             integrate_with_claim_plugin: false,
             show_project_display_name: false,
             check_for_updates: true,
+            start_with_windows: false,
         }
     }
 }

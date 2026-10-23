@@ -33,6 +33,7 @@ use tray::TrayHub;
 slint::include_modules!();
 
 mod app_update;
+mod autostart;
 mod config;
 mod errors;
 mod jenkins_client;
@@ -715,6 +716,7 @@ fn populate_settings(services: &Services, settings: &SettingsWindow) -> Result<(
     settings.set_integrate_with_claim_plugin(general.integrate_with_claim_plugin);
     settings.set_show_project_display_name(general.show_project_display_name);
     settings.set_check_for_updates(general.check_for_updates);
+    settings.set_start_with_windows(autostart::is_enabled());
 
     let notifications = &config.notification_settings;
     settings.set_enable_sound(notifications.sound_notifications);
@@ -1873,7 +1875,9 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
             general.integrate_with_claim_plugin = settings.get_integrate_with_claim_plugin();
             general.show_project_display_name = settings.get_show_project_display_name();
             general.check_for_updates = settings.get_check_for_updates();
+            general.start_with_windows = settings.get_start_with_windows();
             let check_for_updates = general.check_for_updates;
+            let start_with_windows = general.start_with_windows;
 
             if let Err(e) = services.config.set_general_settings(general) {
                 log::error!("Could not save the general settings: {e}");
@@ -1882,6 +1886,8 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
             // original: SettingsForm OK -> ApplicationUpdateService.
             // EnableTimer(checked)
             services.app_update.clone().enable_timer(check_for_updates);
+            // Sync the Windows Run registry key with the new autostart state.
+            autostart::sync(start_with_windows);
             // original: ConfigurationUpdated -> MainForm refreshes the grid
             // (display names), the claim plugin columns, the notification
             // service and the tray notifier.
@@ -2328,6 +2334,12 @@ fn main() -> Result<()> {
     // --- Services (original: Spring context object graph) ---
 
     let config_service = Arc::new(ConfigurationService::new()?);
+
+    // Sync the Windows autostart registry key with the saved setting so the
+    // registry stays consistent (e.g. after the user moved the exe).
+    if let Ok(config) = config_service.get_config() {
+        autostart::sync(config.general_settings.start_with_windows);
+    }
 
     // Tray notifier (original: TrayNotifier / NotifyIcon). The *visible* tray
     // icon is Slint's built-in `SystemTrayIcon` - the exact mechanism the

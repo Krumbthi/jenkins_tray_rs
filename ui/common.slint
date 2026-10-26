@@ -82,12 +82,13 @@ export component StatusBall inherits Rectangle {
     width: 16px;
     height: 16px;
     border-radius: self.width / 2;
-    // While a build is running, the status column always shows a green dot -
+    // While a build is running, the status column always shows a blue dot -
     // independent of the result of the previous build - so running jobs are
-    // recognisable at a glance.
-    background: in-progress ? @linear-gradient(145deg, #5ee08b 0%, #16a34a 100%)
+    // recognisable at a glance. Finished builds are green when successful
+    // and red when failed.
+    background: in-progress ? @linear-gradient(145deg, #63b3f5 0%, #2f6feb 100%)
         : status-kind == "failed" ? @linear-gradient(145deg, #f4776f 0%, #d92d20 100%)
-        : status-kind == "success" ? @linear-gradient(145deg, #63b3f5 0%, #2f6feb 100%)
+        : status-kind == "success" ? @linear-gradient(145deg, #5ee08b 0%, #16a34a 100%)
         : status-kind == "unstable" ? @linear-gradient(145deg, #fbc65e 0%, #e58e00 100%)
         : status-kind == "aborted" ? @linear-gradient(145deg, #c1c9d4 0%, #8a94a4 100%)
         : status-kind == "disabled" ? @linear-gradient(145deg, #7f8999 0%, #4f5866 100%)

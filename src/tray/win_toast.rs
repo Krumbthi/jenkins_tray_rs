@@ -99,10 +99,9 @@ fn ensure_start_menu_shortcut() -> Result<()> {
         CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
         IPersistFile,
     };
-    use windows::Win32::System::Variant::VT_LPWSTR;
     use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
     use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
-    use windows::core::{Interface, PWSTR};
+    use windows::core::Interface;
 
     let exe = std::env::current_exe().context("could not resolve the executable path")?;
     let exe = exe.to_string_lossy().into_owned();
@@ -134,12 +133,11 @@ fn ensure_start_menu_shortcut() -> Result<()> {
         let store: IPropertyStore = link
             .cast()
             .context("could not query the shortcut property store")?;
-        let app_id = HSTRING::from(APP_ID);
-        let mut value = PROPVARIANT::default();
-        // The inner union is wrapped in `ManuallyDrop`; dereference it
-        // explicitly instead of assigning through the union field.
-        (*value.Anonymous.Anonymous).vt = VT_LPWSTR;
-        (*value.Anonymous.Anonymous).Anonymous.pwszVal = PWSTR(app_id.as_ptr() as *mut u16);
+        // `PROPVARIANT::from(&str)` creates a `VT_BSTR` whose memory is freed
+        // by the type's `Drop` (via `PropVariantClear`). Do not build a
+        // `VT_LPWSTR` variant from an `HSTRING` pointer: the drop would free
+        // memory that was not allocated with `CoTaskMemAlloc`.
+        let value = PROPVARIANT::from(APP_ID);
         store
             .SetValue(&PKEY_AppUserModel_ID, &value)
             .context("could not set the shortcut AppUserModelID")?;

@@ -2689,6 +2689,7 @@ dependencies = [
  "slint",
  "slint-build",
  "tokio",
+ "windows",
  "windows-sys 0.52.0",
  "winreg 0.55.0",
  "winresource",

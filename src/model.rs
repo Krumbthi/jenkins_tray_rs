@@ -428,7 +428,7 @@ pub struct Configuration {
 }
 
 /// Global notification settings.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct NotificationSettings {
     /// If true, show balloon notifications in the tray
@@ -440,6 +440,19 @@ pub struct NotificationSettings {
     /// Paths to sound files for different statuses (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sound_paths: Option<HashMap<String, String>>,
+}
+
+impl Default for NotificationSettings {
+    /// New configurations get completion notifications out of the box. An
+    /// existing configuration that explicitly stored `false` keeps it off.
+    fn default() -> Self {
+        Self {
+            balloon_notifications: true,
+            sound_notifications: false,
+            treat_unstable_as_failed: false,
+            sound_paths: None,
+        }
+    }
 }
 
 /// General application settings.
@@ -481,6 +494,14 @@ impl Default for GeneralSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_configurations_enable_balloon_notifications() {
+        assert!(NotificationSettings::default().balloon_notifications);
+        // The other notification settings keep their opt-in behaviour.
+        assert!(!NotificationSettings::default().sound_notifications);
+        assert!(!NotificationSettings::default().treat_unstable_as_failed);
+    }
 
     #[test]
     fn status_ordering_is_total_and_keeps_the_thresholds() {

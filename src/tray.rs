@@ -9,9 +9,9 @@
 //! `Shell_NotifyIconW`, on Linux a StatusNotifierItem): see the `TrayIcon`
 //! component and the wiring in `main.rs`. This module therefore only keeps the
 //! notifier *state* plus a presentation backend: [`ksni_backend`] on Linux,
-//! where no Slint tray simplification is wanted, and [`StubTrayBackend`]
-//! everywhere else (on Windows every icon/tooltip/balloon call degrades to
-//! logging, because Slint draws the icon).
+//! where no Slint tray simplification is wanted, [`WindowsToastBackend`] on
+//! Windows (Slint still draws the icon; completion notifications are native
+//! toasts), and [`StubTrayBackend`] everywhere else.
 //!
 //! The Linux tray is opportunistic only (Windows is the primary target per
 //! the original app): without a StatusNotifierWatcher - e.g. under WSLg -
@@ -28,6 +28,8 @@ use crate::notifications::TrayNotifier;
 
 #[cfg(all(unix, not(target_os = "macos")))]
 mod ksni_backend;
+#[cfg(windows)]
+mod win_toast;
 // The Windows presentation backend is Slint's built-in `SystemTrayIcon` (the
 // same mechanism as project_tracker), so the old hand-rolled
 // `Shell_NotifyIconW` module is no longer compiled. The file is kept for
@@ -43,8 +45,7 @@ pub const MAX_TOOLTIP_LENGTH: usize = 127;
 /// 10000 ms timeout (activity).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationKind {
-    /// Used by the (not yet ported) activity balloons.
-    #[allow(dead_code)]
+    /// Informational notifications, e.g. a successful build completion.
     Info,
     Warning,
     Error,
@@ -155,11 +156,62 @@ impl TrayNotifier for StubTrayBackend {
     }
 }
 
+/// Windows backend: Slint owns the visible tray icon, so icon and tooltip
+/// calls are only logged; balloon notifications are delivered as native
+/// Windows toasts instead of `Shell_NotifyIconW` balloons.
+#[cfg(windows)]
+pub struct WindowsToastBackend;
+
+#[cfg(windows)]
+impl TrayBackend for WindowsToastBackend {
+    fn initialize(&mut self) -> Result<()> {
+        win_toast::initialize();
+        Ok(())
+    }
+    fn can_show_icon(&self) -> bool {
+        false
+    }
+    fn update_icon(&self, status: &BuildStatus) -> Result<()> {
+        StubTrayBackend.update_icon(status)
+    }
+    fn set_tooltip(&self, text: &str) -> Result<()> {
+        StubTrayBackend.set_tooltip(text)
+    }
+    fn show_notification(&self, title: &str, message: &str, kind: NotificationKind) -> Result<()> {
+        if let Err(e) = win_toast::show(title, message) {
+            // Never lose the information: fall back to the log when Windows
+            // refuses the toast (e.g. notifications disabled by policy).
+            log::warn!(
+                "Could not show Windows toast notification ({e:#}): {title} - {}",
+                message.replace('\n', " | ")
+            );
+            return Ok(());
+        }
+        log::debug!("Toast ({kind:?}): {title} - {}", message.replace('\n', " | "));
+        Ok(())
+    }
+    fn set_context_menu(&self, _items: Vec<MenuItem>) -> Result<()> {
+        Ok(())
+    }
+    fn set_event_sender(&mut self, sender: TrayEventSender) {
+        drop(sender);
+    }
+    fn exit(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl TrayNotifier for WindowsToastBackend {
+    fn play_sound(&self, path: &str) -> Result<()> {
+        StubTrayBackend.play_sound(path)
+    }
+}
+
 /// The platform tray backend (original: `NotifyIcon` in `TrayNotifier`).
 ///
-/// Linux gets a StatusNotifierItem ([`ksni_backend`]); on Windows (and
-/// elsewhere) this is the logging stub, because the visible icon there is
-/// Slint's `SystemTrayIcon` - the same mechanism as project_tracker.
+/// Linux gets a StatusNotifierItem ([`ksni_backend`]); on Windows the visible
+/// icon is Slint's `SystemTrayIcon` and notifications are native toasts.
 pub fn create_tray_backend() -> Box<dyn TrayBackend> {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -167,7 +219,7 @@ pub fn create_tray_backend() -> Box<dyn TrayBackend> {
     }
     #[cfg(windows)]
     {
-        Box::new(StubTrayBackend)
+        Box::new(WindowsToastBackend)
     }
     #[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
     {
@@ -264,6 +316,15 @@ pub struct TrayNotifierState {
     last_projects_build_details: HashMap<String, Option<AllBuildDetails>>,
 }
 
+/// A build that finished since the previous update cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompletedBuild {
+    name: String,
+    number: u32,
+    result: BuildStatusEnum,
+    users: Vec<String>,
+}
+
 impl TrayNotifierState {
     pub fn new() -> Self {
         Self::default()
@@ -292,11 +353,19 @@ impl TrayNotifierState {
         let mut error_projects: Vec<&Project> = Vec::new();
         let mut regressing_projects: Vec<&Project> = Vec::new();
         let mut progressing_and_error_projects: Vec<&Project> = Vec::new();
+        let mut completed_builds: Vec<CompletedBuild> = Vec::new();
         let mut total_project_count = 0usize;
 
         for server in &config.servers {
             for project in &server.projects {
                 total_project_count += 1;
+
+                // Compare with the snapshot *before* it is replaced below.
+                if config.notification_settings.balloon_notifications
+                    && let Some(completed) = self.completed_build(project)
+                {
+                    completed_builds.push(completed);
+                }
 
                 let status = self.get_project_status(project);
                 if worst_build_status.is_none_or(|worst| status.value > worst) {
@@ -338,7 +407,14 @@ impl TrayNotifierState {
         self.update_tray_tooltip(&progressing_and_error_projects, total_project_count, backend)?;
 
         if config.notification_settings.balloon_notifications {
-            self.update_balloon_tip(&error_projects, &regressing_projects, backend)?;
+            if completed_builds.is_empty() {
+                self.update_balloon_tip(&error_projects, &regressing_projects, backend)?;
+            } else {
+                // Every finished build is reported, including repeated
+                // failures. Skip the legacy error/regression balloon in this
+                // cycle to avoid a second notification for the same build.
+                self.show_completion_notifications(&completed_builds, backend)?;
+            }
             // original: ShowBallowTip(interestingProjects) - driven by
             // ProjectActivity, which is not ported yet.
             log::debug!("Activity balloons are not available yet (ProjectActivity not ported)");
@@ -346,6 +422,109 @@ impl TrayNotifierState {
 
         self.last_build_status = Some(overall);
         Ok(())
+    }
+
+    /// Returns the build that finished since the previous update, if any.
+    ///
+    /// The completed build number is the reliable signal: `last_build` may
+    /// already point at the next running build, while `last_completed_build`
+    /// only advances when a build has actually finished. This also catches
+    /// short builds that started and finished between two polls.
+    fn completed_build(&self, project: &Project) -> Option<CompletedBuild> {
+        let current = project.all_build_details.as_ref()?;
+        let current_completed = current.last_completed_build.as_ref()?;
+
+        // No snapshot (first poll) means there is no transition to report.
+        let previous = self.last_projects_build_details.get(&project.url)?.as_ref()?;
+        let previous_number = previous
+            .last_completed_build
+            .as_ref()
+            .map(|build| build.number);
+        if previous_number == Some(current_completed.number) {
+            return None;
+        }
+
+        // The result XML is authoritative; fall back to the job colour when
+        // Jenkins did not provide a result (e.g. an interrupted build).
+        let result = if current_completed.result == BuildStatusEnum::Unknown {
+            current.status.value
+        } else {
+            current_completed.result
+        };
+
+        let mut users: Vec<String> = current_completed.users.iter().cloned().collect();
+        users.sort();
+
+        Some(CompletedBuild {
+            name: project.name.clone(),
+            number: current_completed.number,
+            result,
+            users,
+        })
+    }
+
+    /// Report all builds that finished in this update cycle. Several
+    /// completions are grouped into one toast so a batch (e.g. after an
+    /// outage) does not flood the notification area.
+    fn show_completion_notifications(
+        &self,
+        completed: &[CompletedBuild],
+        backend: &dyn TrayBackend,
+    ) -> Result<()> {
+        const MAX_REPORTED_BUILDS: usize = 6;
+
+        let title = if completed.len() == 1 {
+            completion_title(completed[0].result)
+        } else {
+            "Builds finished"
+        };
+
+        let mut message = String::new();
+        for build in completed.iter().take(MAX_REPORTED_BUILDS) {
+            if !message.is_empty() {
+                message.push('\n');
+            }
+            message.push_str(&format!(
+                "{} #{}: {}",
+                build.name,
+                build.number,
+                completion_result(build.result)
+            ));
+            if !build.users.is_empty()
+                && matches!(
+                    build.result,
+                    BuildStatusEnum::Failed | BuildStatusEnum::Unstable
+                )
+            {
+                message.push_str(&format!(" ({})", build.users.join(", ")));
+            }
+        }
+        if completed.len() > MAX_REPORTED_BUILDS {
+            message.push_str(&format!(
+                "\n... and {} more",
+                completed.len() - MAX_REPORTED_BUILDS
+            ));
+        }
+
+        let kind = if completed
+            .iter()
+            .any(|build| build.result == BuildStatusEnum::Failed)
+        {
+            NotificationKind::Error
+        } else if completed.iter().any(|build| {
+            matches!(
+                build.result,
+                BuildStatusEnum::Unstable
+                    | BuildStatusEnum::Aborted
+                    | BuildStatusEnum::Indeterminate
+            )
+        }) {
+            NotificationKind::Warning
+        } else {
+            NotificationKind::Info
+        };
+
+        backend.show_notification(title, &message, kind)
     }
 
     /// Status of a project, honouring the acknowledgement
@@ -515,6 +694,31 @@ impl TrayNotifierState {
     }
 }
 
+/// Notification title for a single finished build.
+fn completion_title(result: BuildStatusEnum) -> &'static str {
+    match result {
+        BuildStatusEnum::Successful => "Build succeeded",
+        BuildStatusEnum::Failed => "Build failed",
+        BuildStatusEnum::Unstable => "Build unstable",
+        BuildStatusEnum::Aborted => "Build aborted",
+        BuildStatusEnum::Disabled => "Build disabled",
+        BuildStatusEnum::Indeterminate | BuildStatusEnum::Unknown => "Build finished",
+    }
+}
+
+/// Result wording used inside a completion notification.
+fn completion_result(result: BuildStatusEnum) -> &'static str {
+    match result {
+        BuildStatusEnum::Successful => "succeeded",
+        BuildStatusEnum::Failed => "failed",
+        BuildStatusEnum::Unstable => "unstable",
+        BuildStatusEnum::Aborted => "aborted",
+        BuildStatusEnum::Disabled => "disabled",
+        BuildStatusEnum::Indeterminate => "indeterminate",
+        BuildStatusEnum::Unknown => "finished",
+    }
+}
+
 /// "name (user1, user2)" (original: FormatProjectDetails).
 fn format_project_details(project_name: &str, build: Option<&crate::model::BuildDetails>, text: &mut String) {
     text.push_str(project_name);
@@ -594,6 +798,211 @@ impl TrayHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{BuildDetails, NotificationSettings, Server};
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingBackend {
+        notifications: Mutex<Vec<(String, String, NotificationKind)>>,
+    }
+
+    impl RecordingBackend {
+        fn take(&self) -> Vec<(String, String, NotificationKind)> {
+            std::mem::take(&mut *self.notifications.lock().unwrap())
+        }
+    }
+
+    impl TrayBackend for RecordingBackend {
+        fn initialize(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn can_show_icon(&self) -> bool {
+            false
+        }
+        fn update_icon(&self, _status: &BuildStatus) -> Result<()> {
+            Ok(())
+        }
+        fn set_tooltip(&self, _text: &str) -> Result<()> {
+            Ok(())
+        }
+        fn show_notification(
+            &self,
+            title: &str,
+            message: &str,
+            kind: NotificationKind,
+        ) -> Result<()> {
+            self.notifications
+                .lock()
+                .unwrap()
+                .push((title.to_string(), message.to_string(), kind));
+            Ok(())
+        }
+        fn set_context_menu(&self, _items: Vec<MenuItem>) -> Result<()> {
+            Ok(())
+        }
+        fn set_event_sender(&mut self, sender: TrayEventSender) {
+            drop(sender);
+        }
+        fn exit(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn status(value: BuildStatusEnum, in_progress: bool) -> BuildStatus {
+        BuildStatus {
+            value,
+            is_in_progress: in_progress,
+            is_stuck: false,
+        }
+    }
+
+    fn project(
+        completed: Option<(u32, BuildStatusEnum)>,
+        status: BuildStatus,
+    ) -> Project {
+        let completed = completed.map(|(number, result)| BuildDetails {
+            number,
+            result,
+            users: HashSet::from(["alice".to_string()]),
+            ..Default::default()
+        });
+        let mut project = Project {
+            name: "job".into(),
+            url: "http://ci/job/job/".into(),
+            ..Default::default()
+        };
+        project.all_build_details = Some(AllBuildDetails {
+            status,
+            last_build: completed.clone(),
+            last_completed_build: completed,
+            ..Default::default()
+        });
+        project
+    }
+
+    fn config_with(project: Project, balloon_notifications: bool) -> Configuration {
+        Configuration {
+            servers: vec![Server {
+                url: "http://ci/".into(),
+                projects: vec![project],
+                ..Default::default()
+            }],
+            notification_settings: NotificationSettings {
+                balloon_notifications,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn notifies_each_completed_build_once() {
+        let backend = RecordingBackend::default();
+        let mut state = TrayNotifierState::new();
+
+        // A running build is not a completion.
+        state.update(
+            &config_with(project(None, status(BuildStatusEnum::Successful, true)), true),
+            &backend,
+        );
+        assert!(backend.take().is_empty());
+
+        // The first completed build is reported with its result.
+        state.update(
+            &config_with(
+                project(
+                    Some((7, BuildStatusEnum::Successful)),
+                    status(BuildStatusEnum::Successful, false),
+                ),
+                true,
+            ),
+            &backend,
+        );
+        let notifications = backend.take();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].0, "Build succeeded");
+        assert!(notifications[0].1.contains("job #7: succeeded"));
+        assert_eq!(notifications[0].2, NotificationKind::Info);
+
+        // Polling the same completed build again stays silent.
+        state.update(
+            &config_with(
+                project(
+                    Some((7, BuildStatusEnum::Successful)),
+                    status(BuildStatusEnum::Successful, false),
+                ),
+                true,
+            ),
+            &backend,
+        );
+        assert!(backend.take().is_empty());
+
+        // Repeated failures are reported as well, with their culprits.
+        state.update(
+            &config_with(
+                project(
+                    Some((8, BuildStatusEnum::Failed)),
+                    status(BuildStatusEnum::Failed, false),
+                ),
+                true,
+            ),
+            &backend,
+        );
+        let notifications = backend.take();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].0, "Build failed");
+        assert!(notifications[0].1.contains("job #8: failed"));
+        assert!(notifications[0].1.contains("alice"));
+        assert_eq!(notifications[0].2, NotificationKind::Error);
+    }
+
+    #[test]
+    fn detects_completion_between_polls_and_respects_setting() {
+        let backend = RecordingBackend::default();
+        let mut state = TrayNotifierState::new();
+
+        // First poll only establishes the baseline - no notification for a
+        // build that was already finished before the app started.
+        state.update(
+            &config_with(
+                project(
+                    Some((1, BuildStatusEnum::Successful)),
+                    status(BuildStatusEnum::Successful, false),
+                ),
+                true,
+            ),
+            &backend,
+        );
+        assert!(backend.take().is_empty());
+
+        // A short build starts and finishes between two polls: the completed
+        // build number changed, so it is still reported.
+        state.update(
+            &config_with(
+                project(
+                    Some((2, BuildStatusEnum::Successful)),
+                    status(BuildStatusEnum::Successful, false),
+                ),
+                true,
+            ),
+            &backend,
+        );
+        assert_eq!(backend.take().len(), 1);
+
+        // With the setting disabled, completions stay silent.
+        state.update(
+            &config_with(
+                project(
+                    Some((3, BuildStatusEnum::Successful)),
+                    status(BuildStatusEnum::Successful, false),
+                ),
+                false,
+            ),
+            &backend,
+        );
+        assert!(backend.take().is_empty());
+    }
 
     #[test]
     fn truncates_long_tooltips() {

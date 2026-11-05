@@ -7,7 +7,7 @@
 //! key / Return / Menu key navigation and the "Last check:" status bar.
 
 import { Button, ListView } from "std-widgets.slint";
-import { ProjectRow, TableHeader, ProjectRowView } from "common.slint";
+import { ProjectRow, TableHeader, ProjectRowView, Ui } from "common.slint";
 import { Theme } from "theme.slint";
 import { AppVersion } from "version.slint";
 import { SettingsWindow } from "settings.slint";
@@ -33,6 +33,10 @@ export component AppWindow inherits Window {
     in-out property <[ProjectRow]> rows;
     in-out property <int> selected-row: -1;
     in property <bool> integrate-claim: false;
+
+    // Total width of all grid columns (used to drive horizontal scrolling of
+    // the header and the rows when the columns do not fit the window).
+    property <length> grid-content-width: Ui.col-status + Ui.col-project + Ui.col-details + Ui.col-build + Ui.col-success + Ui.col-failure + Ui.col-user + (root.integrate-claim ? Ui.col-claimed + Ui.col-reason : 0px);
     in-out property <string> last-check: "Last check: -";
     in-out property <string> status-text;
 
@@ -124,11 +128,20 @@ export component AppWindow inherits Window {
         }
 
         // --- Column headers (original: grid column captions + sort glyphs) ---
-        TableHeader {
-            show-claim-columns: root.integrate-claim;
-            sort-column: root.sort-column;
-            sort-ascending: root.sort-ascending;
-            column-clicked(column) => { root.sort-changed(column); }
+        // Wrapped so the header can scroll horizontally in lock-step with the
+        // rows below (the ListView's horizontal scrollbar drives both).
+        Rectangle {
+            height: 28px;
+            clip: true;
+
+            TableHeader {
+                x: projects-list.content-x;
+                width: root.grid-content-width;
+                show-claim-columns: root.integrate-claim;
+                sort-column: root.sort-column;
+                sort-ascending: root.sort-ascending;
+                column-clicked(column) => { root.sort-changed(column); }
+            }
         }
 
         // --- Projects grid (original: projectsGridControl) ---
@@ -179,8 +192,10 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    ListView {
+                    projects-list := ListView {
+                        content-width: root.grid-content-width;
                         for item[i] in root.rows: delegate := ProjectRowView {
+                            width: root.grid-content-width;
                             project-row: item;
                             show-claim-columns: root.integrate-claim;
                             alternate: Math.mod(i, 2) == 1;

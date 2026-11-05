@@ -1322,20 +1322,35 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                     // `jenkins_files/trigger_pipeline.sh`.
                     lock_state(&services.state).build_params_target =
                         Some((server_url.clone(), project_url.clone()));
+                    let client = services.clients.for_server(server).clone();
+                    let server = server.clone();
+                    let project = project.clone();
+                    let job = project.name.clone();
+                    // The dialog also edits the project's periodic schedule;
+                    // pre-fill it with the cron part of the saved trigger (the
+                    // parameters are edited in the list above).
+                    let (periodic_schedule, periodic_params) = project
+                        .periodic_trigger
+                        .as_deref()
+                        .map(jenkins_client::parse_periodic_trigger)
+                        .unwrap_or_default();
                     // Pre-fill candidates: the values submitted the last
-                    // time for this job (new feature; `None` on the first
-                    // open or when the config cannot be read).
-                    let remembered = services
+                    // time for this job (new feature; empty on the first
+                    // open or when the config cannot be read), with the
+                    // values stored in the periodic trigger as a fallback so
+                    // opening the dialog does not replace a saved schedule
+                    // with the job defaults.
+                    let mut remembered = services
                         .config
                         .get_config()
                         .ok()
                         .and_then(|config| {
                             config.last_build_parameters.get(&project_url).cloned()
-                        });
-                    let client = services.clients.for_server(server).clone();
-                    let server = server.clone();
-                    let project = project.clone();
-                    let job = project.name.clone();
+                        })
+                        .unwrap_or_default();
+                    for (name, value) in periodic_params {
+                        remembered.entry(name).or_insert(value);
+                    }
                     let message_box = message_box.clone();
                     let dialog = build_params.as_weak();
                     let state = services.state.clone();
@@ -1389,8 +1404,7 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                                         .iter()
                                         .map(|param| {
                                             remembered
-                                                .as_ref()
-                                                .and_then(|saved| saved.get(&param.name))
+                                                .get(&param.name)
                                                 .filter(|saved| param.can_restore(saved))
                                                 .cloned()
                                                 .unwrap_or_else(|| param.default.clone())
@@ -1441,6 +1455,8 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                                     let dialog = dialog.unwrap();
                                     dialog.set_job_label(format!("Job: {job}").into());
                                     dialog.set_params(ModelRc::new(VecModel::from(rows)));
+                                    dialog.set_periodic_enabled(!periodic_schedule.is_empty());
+                                    dialog.set_periodic_schedule(periodic_schedule.as_str().into());
                                     if let Err(e) = dialog.show() {
                                         log::error!(
                                             "Could not show the build parameters dialog: {e}"
@@ -2162,6 +2178,30 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
         let message_box = windows.message_box.as_weak();
         windows.build_params.on_accepted(move || {
             let dialog = build_params.unwrap();
+
+            // Validate the optional schedule before consuming the dialog state,
+            // so the dialog stays open when the input is incomplete or invalid.
+            if dialog.get_periodic_enabled() {
+                let schedule = dialog.get_periodic_schedule();
+                if schedule.trim().is_empty() {
+                    show_message_box(
+                        &message_box,
+                        "Periodic build",
+                        "Please enter a cron schedule, or uncheck \
+                         \"Build periodically with these parameters\".",
+                    );
+                    return;
+                }
+                if let Err(e) = projects_updater::validate_cron_spec(&schedule) {
+                    show_message_box(
+                        &message_box,
+                        "Periodic build",
+                        &format!("Invalid schedule: {e}."),
+                    );
+                    return;
+                }
+            }
+
             let (target, values) = {
                 let mut state = lock_state(&services.state);
                 (
@@ -2178,6 +2218,40 @@ fn wire_callbacks(ui: &AppWindow, services: &Services, windows: &Windows) {
                     .filter(|entry| entry.persist)
                     .map(|entry| (entry.name.clone(), entry.value.clone()))
                     .collect();
+                // The schedule reuses the parameter values from the dialog,
+                // so "Build with parameters" also configures periodic runs.
+                // Passwords are not persisted in the configuration file and
+                // are therefore omitted from the stored trigger, like in
+                // `last_build_parameters`.
+                let scheduled_params = values
+                    .iter()
+                    .filter(|entry| entry.persist)
+                    .map(|entry| format!("{}={}", entry.name, entry.value))
+                    .collect::<Vec<_>>()
+                    .join(";");
+                let periodic_trigger = if dialog.get_periodic_enabled() {
+                    let mut spec = dialog.get_periodic_schedule().trim().to_string();
+                    if !scheduled_params.is_empty() {
+                        spec.push_str(" %");
+                        spec.push_str(&scheduled_params);
+                    }
+                    Some(spec)
+                } else {
+                    None
+                };
+                if let Err(e) = services.config.set_project_periodic_trigger(
+                    &server_url,
+                    &project_url,
+                    periodic_trigger.as_deref(),
+                ) {
+                    log::warn!("Could not save the periodic build schedule: {e}");
+                }
+                if periodic_trigger.is_some() && values.iter().any(|entry| !entry.persist) {
+                    log::warn!(
+                        "The periodic schedule of {project_url} omits password parameters \
+                         (password values are never persisted)"
+                    );
+                }
                 let values: Vec<(String, String)> = values
                     .into_iter()
                     .map(|entry| (entry.name, entry.value))

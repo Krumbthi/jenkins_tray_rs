@@ -696,6 +696,28 @@ pub async fn trigger_build(
     Ok(())
 }
 
+/// Parses a "build periodically with parameters" trigger spec into its cron
+/// part and parameter list.
+pub fn parse_periodic_trigger(spec: &str) -> (String, Vec<(String, String)>) {
+    let (cron, rest) = match spec.split_once('%') {
+        Some((c, r)) => (c.trim().to_string(), Some(r.trim())),
+        None => (spec.trim().to_string(), None),
+    };
+    let mut params = Vec::new();
+    if let Some(rest) = rest {
+        for pair in rest.split(';') {
+            let pair = pair.trim();
+            if pair.is_empty() {
+                continue;
+            }
+            if let Some((k, v)) = pair.split_once('=') {
+                params.push((k.trim().to_string(), v.trim().to_string()));
+            }
+        }
+    }
+    (cron, params)
+}
+
 /// Stops the last build (original: JenkinsService.StopBuild).
 pub async fn stop_build(
     client: &reqwest::Client,

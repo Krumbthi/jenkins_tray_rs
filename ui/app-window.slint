@@ -235,7 +235,8 @@ export component AppWindow inherits Window {
                         // posts `/build?delay=0sec`, which does not queue a run
                         // on parameterized jobs; this opens the dialog that
                         // posts `buildWithParameters` like the reference script
-                        // `jenkins_files/trigger_pipeline.sh`.
+                        // `jenkins_files/trigger_pipeline.sh`. The dialog also
+                        // carries the optional periodic schedule at its bottom.
                         title: @tr("Build with parameters…");
                         enabled: root.has-selection && !root.sel-in-progress;
                         activated => { root.menu-action("run-build-params"); }

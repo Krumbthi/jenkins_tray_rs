@@ -203,11 +203,19 @@ export struct BuildParamRow {
 
 /// "Build with parameters" dialog (context menu: "Build with parameters").
 /// Layout follows the other dialogs: header label, scrolling list of
-/// parameter rows, OK/Cancel.
+/// parameter rows, and the optional periodic schedule at the bottom, so the
+/// same parameter values can also be reused for scheduled builds instead of
+/// keeping a separate "Build periodically with parameters" menu entry.
 export component BuildParamsWindow inherits Window {
     in property <string> dialog-title: "Build with parameters";
     in property <string> job-label;
     in-out property <[BuildParamRow]> params;
+    // Periodic schedule (Jenkins cron syntax) applied to the parameters
+    // shown above when the checkbox is enabled. The Rust side loads the
+    // project's saved trigger when the dialog opens and persists the result
+    // when it is accepted.
+    in-out property <bool> periodic-enabled: false;
+    in-out property <string> periodic-schedule;
 
     callback param-edited(int, string);
     callback accepted();
@@ -216,8 +224,8 @@ export component BuildParamsWindow inherits Window {
     title: root.dialog-title;
     preferred-width: 500px;
     min-width: 440px;
-    preferred-height: 430px;
-    min-height: 320px;
+    preferred-height: 520px;
+    min-height: 400px;
     background: Theme.window-gradient;
 
     VerticalLayout {
@@ -296,6 +304,40 @@ export component BuildParamsWindow inherits Window {
                     selected(value) => { root.param-edited(i, value); }
                 }
             }
+        }
+
+        // --- Periodic build (optional, at the bottom) ---------------------
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+
+        CheckBox {
+            text: @tr("Build periodically with these parameters");
+            checked <=> root.periodic-enabled;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+
+            Text {
+                text: @tr("Schedule:");
+                vertical-alignment: center;
+            }
+
+            LineEdit {
+                horizontal-stretch: 1;
+                text <=> root.periodic-schedule;
+                enabled: root.periodic-enabled;
+                placeholder-text: @tr("Jenkins cron, e.g. H 23 * * *");
+            }
+        }
+
+        Text {
+            text: @tr("Jenkins cron syntax (H spreads runs across the hour/day). Uncheck to remove the schedule.");
+            color: Theme.text-subtle;
+            font-size: 11px;
+            wrap: word-wrap;
         }
 
         HorizontalLayout {

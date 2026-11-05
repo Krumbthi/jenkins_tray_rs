@@ -224,6 +224,24 @@ impl ConfigurationService {
         })
     }
 
+    /// Set (or clear) the client-side periodic build trigger of a project
+    /// ("build periodically with parameters"; the spec is `cron[ %k=v;k=v]`).
+    pub fn set_project_periodic_trigger(
+        &self,
+        server_url: &str,
+        project_url: &str,
+        trigger: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.mutate(|config| {
+            if let Some(project) = Self::find_project_mut(config, server_url, project_url) {
+                project.periodic_trigger = trigger
+                    .map(str::trim)
+                    .filter(|spec| !spec.is_empty())
+                    .map(String::from);
+            }
+        })
+    }
+
     fn find_project_mut<'a>(
         config: &'a mut Configuration,
         server_url: &str,

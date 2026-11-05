@@ -63,6 +63,11 @@ pub struct Project {
     /// (original: Project.CauseText, JSON "causetext")
     #[serde(default, rename = "causetext", skip_serializing_if = "Option::is_none")]
     pub cause_text: Option<String>,
+    /// Optional client-side "build periodically with parameters" trigger
+    /// spec, e.g. `H 23 * * * %BUILD_TYPE=DBG_REL;CLEAN_BUILD=true`.
+    /// Stored verbatim; parsed at scheduling time.
+    #[serde(default, rename = "periodicTrigger", skip_serializing_if = "Option::is_none")]
+    pub periodic_trigger: Option<String>,
 }
 
 impl Project {
